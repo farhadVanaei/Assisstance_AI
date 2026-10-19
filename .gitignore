@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+backend/uploads/*
+!backend/uploads/.gitkeep
+!backend/uploads/.gitignore
+backend/models/*.joblib
+.DS_Store
+*.log
