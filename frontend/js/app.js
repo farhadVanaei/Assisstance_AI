@@ -20,6 +20,10 @@
   const chatLog = $("#chat-log");
   const chatForm = $("#chat-form");
   const chatInput = $("#chat-input");
+  const langSelect = $("#lang-select");
+  const modelSelect = $("#model-select");
+  const knowledgeList = $("#knowledge-list");
+  const knowledgeEmpty = $("#knowledge-empty");
 
   const STATUS_FA = {
     visiting: "در حال خواندن",
@@ -36,6 +40,20 @@
       return id;
     })();
 
+  if (localStorage.getItem("javad_lang")) {
+    langSelect.value = localStorage.getItem("javad_lang");
+  }
+  if (localStorage.getItem("javad_model")) {
+    // populated after config load
+  }
+
+  langSelect.addEventListener("change", () => {
+    localStorage.setItem("javad_lang", langSelect.value);
+  });
+  modelSelect.addEventListener("change", () => {
+    localStorage.setItem("javad_model", modelSelect.value);
+  });
+
   let selectedFiles = [];
   /** @type {Map<string, {url:string,status:string,depth:number,title:string,domain:string}>} */
   let crawlRows = new Map();
@@ -50,6 +68,7 @@
       panelKnowledge.classList.toggle("hidden", tab !== "knowledge");
       panelChat.classList.toggle("hidden", tab !== "chat");
       if (tab === "chat") chatInput.focus();
+      if (tab === "knowledge") refreshKnowledge();
     });
   });
 
@@ -114,7 +133,6 @@
   function upsertCrawlLink(link) {
     if (!link || !link.url) return;
     const prev = crawlRows.get(link.url);
-    // don't downgrade learned → visiting
     const rank = { visiting: 1, skipped: 2, failed: 2, learned: 3 };
     if (prev && (rank[prev.status] || 0) > (rank[link.status] || 0)) {
       link = { ...link, status: prev.status, title: link.title || prev.title };
@@ -197,6 +215,8 @@
     const form = new FormData();
     selectedFiles.forEach((f) => form.append("files", f));
     if (url) form.append("url", url);
+    form.append("max_depth", String($("#crawl-depth")?.value || 2));
+    form.append("max_pages", String($("#crawl-pages")?.value || 20));
 
     ingestBtn.disabled = true;
     clearTimeout(hideProgressSoon._t);
@@ -257,6 +277,7 @@
       renderFiles();
       hideProgressSoon();
       refreshHealth();
+      refreshKnowledge();
     } catch (err) {
       const msg = err.message || "خطا در یادگیری";
       ingestStatus.textContent = msg;
@@ -282,12 +303,61 @@
       chatLog.innerHTML = "";
       appendBubble("javad", "جواد", "حافظه‌ام پاک شد. از نو آماده‌ام.");
       refreshHealth();
+      refreshKnowledge();
     } catch (err) {
       showToast(err.message || "خطا در پاکسازی", true);
     } finally {
       btn.disabled = false;
     }
   });
+
+  $("#refresh-knowledge-btn")?.addEventListener("click", () => refreshKnowledge());
+
+  async function refreshKnowledge() {
+    try {
+      const res = await fetch("/api/knowledge");
+      const data = await res.json();
+      const sources = data.sources || [];
+      if (!sources.length) {
+        knowledgeList.innerHTML = "";
+        knowledgeEmpty.hidden = false;
+        return;
+      }
+      knowledgeEmpty.hidden = true;
+      knowledgeList.innerHTML = sources
+        .map((s) => {
+          const date = s.updated_at
+            ? new Date(s.updated_at * 1000).toLocaleString("fa-IR")
+            : "";
+          return `<li class="knowledge-item flex items-start justify-between gap-3 border border-ink-100 px-3 py-2">
+            <div class="min-w-0">
+              <p class="font-medium text-ink-700 truncate">${escapeHtml(s.name)}</p>
+              <p class="text-xs text-ink-400 mt-0.5">${escapeHtml(s.kind)} · ${s.chunk_count || 0} قطعه${date ? " · " + date : ""}</p>
+            </div>
+            <button type="button" class="shrink-0 text-xs text-red-800 border border-red-200 px-2 py-1 hover:bg-red-50" data-delete-source="${escapeHtml(s.id)}">حذف</button>
+          </li>`;
+        })
+        .join("");
+      knowledgeList.querySelectorAll("[data-delete-source]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-delete-source");
+          if (!id || !confirm("این منبع حذف شود؟")) return;
+          const res = await fetch(`/api/rag/source/${id}`, { method: "DELETE" });
+          const data = await res.json();
+          if (!res.ok) {
+            showToast(_detail(data) || "حذف ناموفق", true);
+            return;
+          }
+          showToast(data.message || "حذف شد");
+          refreshKnowledge();
+          refreshHealth();
+        });
+      });
+    } catch {
+      knowledgeEmpty.hidden = false;
+      knowledgeEmpty.textContent = "بارگذاری فهرست دانش ممکن نشد.";
+    }
+  }
 
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -296,36 +366,108 @@
     appendBubble("user", "شما", prompt);
     chatInput.value = "";
     chatInput.disabled = true;
-    const thinking = appendBubble("javad", "جواد", "در حال فکر کردن…");
+    const bubble = appendBubble("javad", "جواد", "");
+    const p = bubble.querySelector("p");
+    p.textContent = "";
+    let citations = [];
+    let sources = [];
     try {
-      const res = await fetch("/api/ollama/chat", {
+      const res = await fetch("/api/ollama/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, session_id: sessionId }),
+        body: JSON.stringify({
+          prompt,
+          session_id: sessionId,
+          language: langSelect.value || "fa",
+          model: modelSelect.value || null,
+        }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(_detail(data) || "خطا در گفتگو");
-      thinking.remove();
-      appendBubble("javad", "جواد", data.answer);
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(_detail(errBody) || "خطا در گفتگو");
+      }
+      let full = "";
+      await readNdjsonStream(res, (evt) => {
+        if (!evt || typeof evt !== "object") return;
+        if (evt.type === "meta") {
+          citations = evt.citations || [];
+          sources = evt.sources || [];
+        } else if (evt.type === "token") {
+          if (evt.replace) {
+            full = evt.text || "";
+          } else {
+            full += evt.text || "";
+          }
+          p.textContent = full;
+          chatLog.scrollTop = chatLog.scrollHeight;
+        } else if (evt.type === "done") {
+          full = evt.answer || full;
+          p.textContent = full;
+          citations = evt.citations || citations;
+          sources = evt.sources || sources;
+          attachCitations(bubble, citations, sources);
+        }
+      });
+      if (!p.textContent) p.textContent = "پاسخی دریافت نشد.";
     } catch (err) {
-      thinking.remove();
-      appendBubble("javad", "جواد", err.message || "خطایی رخ داد.");
+      p.textContent = err.message || "خطایی رخ داد.";
     } finally {
       chatInput.disabled = false;
       chatInput.focus();
     }
   });
 
+  function attachCitations(bubble, citations, sources) {
+    const existing = bubble.querySelector(".chat-sources");
+    if (existing) existing.remove();
+    const items = Array.isArray(citations) && citations.length
+      ? citations
+      : (sources || []).map((s) => ({ source: s, excerpt: "" }));
+    if (!items.length) return;
+    const wrap = document.createElement("div");
+    wrap.className = "chat-sources";
+    wrap.innerHTML =
+      "<span class=\"chat-sources-label\">منابع:</span> " +
+      items
+        .map((c, i) => {
+          const title = escapeHtml(c.source || "منبع");
+          const excerpt = c.excerpt ? ` — ${escapeHtml(c.excerpt)}` : "";
+          return `<button type="button" class="chat-cite" title="${excerpt}" data-cite="${i}">[${i + 1}] ${title}</button>`;
+        })
+        .join(" ");
+    bubble.appendChild(wrap);
+    wrap.querySelectorAll(".chat-cite").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const idx = Number(btn.getAttribute("data-cite"));
+        const c = items[idx];
+        if (c?.excerpt) showToast(`${c.source}: ${c.excerpt}`);
+        else if (c?.source) showToast(c.source);
+      });
+    });
+  }
+
   async function refreshHealth() {
     const badge = $("#ollama-badge");
     try {
       const res = await fetch("/api/health");
       const data = await res.json();
-      if (data.ollama) {
-        badge.textContent = `سامانه آماده است · بخش‌های دانش: ${data.chunks || 0}`;
-      } else {
-        badge.textContent =
-          "مدل محلی در دسترس نیست؛ پاسخ‌ها از دانش ذخیره‌شده داده می‌شود. سرویس محلی را روشن کنید تا گفتگو کامل‌تر شود.";
+      const bits = [];
+      if (data.ollama) bits.push("اولاما آماده");
+      else bits.push("اولاما خاموش");
+      bits.push(`دانش: ${data.chunks || 0} قطعه`);
+      if (data.vector_store) bits.push(`بردار: ${data.vector_store}`);
+      if (data.embed_ok) bits.push("امبدینگ آماده");
+      badge.textContent = bits.join(" · ");
+      if (Array.isArray(data.models) && data.models.length) {
+        const current = localStorage.getItem("javad_model") || "";
+        const opts = ['<option value="">پیش‌فرض سامانه</option>'].concat(
+          data.models.map(
+            (m) =>
+              `<option value="${escapeHtml(m)}"${m === current || m === data.chat_model ? " selected" : ""}>${escapeHtml(m)}</option>`
+          )
+        );
+        modelSelect.innerHTML = opts.join("");
+        if (current) modelSelect.value = current;
       }
     } catch {
       badge.textContent = "وضعیت سامانه مشخص نیست.";
@@ -374,4 +516,5 @@
   }
 
   refreshHealth();
+  refreshKnowledge();
 })();
