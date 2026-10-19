@@ -10,3 +10,9 @@ backend/uploads/*
 backend/models/*.joblib
 .DS_Store
 *.log
+backend/data/*
+!backend/data/.gitkeep
+!backend/data/.gitignore
+.chroma/
+*.db
+.env
