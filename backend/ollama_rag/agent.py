@@ -48,6 +48,8 @@ class Chunk:
     kind: str = "text"
     source_id: str = ""
     score: float = 0.0
+    url: str = ""
+    images: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -70,16 +72,22 @@ class JavadOllamaAgent:
     def reload_cache(self) -> None:
         """Load chunks from SQLite into memory cache and rebuild BM25."""
         records = self.store.load_chunks(self.user_id)
+        source_meta: Dict[str, Dict[str, Any]] = {
+            s.id: (s.meta or {}) for s in self.store.list_sources(self.user_id)
+        }
         cache: Dict[str, Chunk] = {}
         corpus: List[str] = []
         ids: List[str] = []
         for r in records:
+            meta = source_meta.get(r.source_id, {})
             cache[r.id] = Chunk(
                 id=r.id,
                 source=r.source,
                 text=r.text,
                 kind=r.kind,
                 source_id=r.source_id,
+                url=str(meta.get("url") or ""),
+                images=list(meta.get("images") or []),
             )
             corpus.append(r.text)
             ids.append(r.id)
@@ -330,6 +338,8 @@ class JavadOllamaAgent:
                     kind=chunk.kind,
                     source_id=chunk.source_id,
                     score=score,
+                    url=chunk.url,
+                    images=chunk.images,
                 )
             )
             if len(results) >= top_k:
@@ -348,6 +358,15 @@ class JavadOllamaAgent:
     def _append_turn(self, session_id: str, prompt: str, answer: str) -> None:
         self.store.append_history(session_id, "user", prompt, self.user_id)
         self.store.append_history(session_id, "assistant", answer, self.user_id)
+
+    def list_sessions(self) -> List[Dict[str, Any]]:
+        return self.store.list_sessions(self.user_id)
+
+    def rename_session(self, session_id: str, title: str) -> bool:
+        return self.store.rename_session(session_id, title, self.user_id)
+
+    def delete_session(self, session_id: str) -> bool:
+        return self.store.delete_session(session_id, self.user_id)
 
     async def chat(
         self,
@@ -400,6 +419,8 @@ class JavadOllamaAgent:
                 "source_id": c.source_id,
                 "score": round(c.score, 4),
                 "excerpt": c.text[:160] + ("…" if len(c.text) > 160 else ""),
+                "url": c.url,
+                "images": c.images,
             }
             for c in retrieved
         ]
@@ -488,6 +509,8 @@ class JavadOllamaAgent:
                 "source_id": c.source_id,
                 "score": round(c.score, 4),
                 "excerpt": c.text[:160] + ("…" if len(c.text) > 160 else ""),
+                "url": c.url,
+                "images": c.images,
             }
             for c in retrieved
         ]

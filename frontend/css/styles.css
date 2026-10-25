@@ -467,9 +467,112 @@ body {
 
 .app-view-chat {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   min-width: 0;
   background: radial-gradient(ellipse at top, #ffffff 0%, #f7f7f6 55%, #efefed 100%);
+}
+
+.chat-sessions {
+  width: 16rem;
+  flex-shrink: 0;
+  border-left: 1px solid #e2e2df;
+  background: #ffffff;
+  padding: 1rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.new-chat-btn {
+  flex-shrink: 0;
+}
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  overflow-y: auto;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s ease;
+}
+
+.session-item:hover {
+  background: #f7f7f6;
+}
+
+.session-item.is-active {
+  background: #efefed;
+  border-color: #e2e2df;
+}
+
+.session-item-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.session-item-title {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #2f2f2b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-item-preview {
+  font-size: 0.7rem;
+  color: #9a9a94;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-item-btn {
+  flex-shrink: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.4rem;
+  color: #9a9a94;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.session-item:hover .session-item-btn,
+.session-item.is-active .session-item-btn {
+  opacity: 1;
+}
+
+.session-item-btn:hover {
+  background: #e2e2df;
+  color: #2f2f2b;
+}
+
+.session-item-btn svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
 }
 
 .chat-topbar {
@@ -606,6 +709,28 @@ body {
   line-height: 1.6;
 }
 
+.chat-source-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.chat-source-images img {
+  width: 4.5rem;
+  height: 4.5rem;
+  object-fit: cover;
+  border-radius: 0.5rem;
+  border: 1px solid #e2e2df;
+  background: #efefed;
+  display: block;
+  transition: transform 0.12s ease;
+}
+
+.chat-source-images a:hover img {
+  transform: scale(1.05);
+}
+
 .chat-sources-label {
   font-weight: 600;
   color: #6f6f69;
@@ -696,6 +821,50 @@ body {
 .chat-send-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.mic-btn {
+  flex-shrink: 0;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #4a4a45;
+  border: 1px solid #e2e2df;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.mic-btn svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.mic-btn:hover {
+  border-color: #16a35a;
+  color: #16a35a;
+}
+
+.mic-btn.is-recording {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+  animation: mic-pulse 1.4s infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.35); }
+  50% { box-shadow: 0 0 0 8px rgba(220, 38, 38, 0); }
+}
+
+.voice-status {
+  padding: 0 1.5rem 0.6rem;
+  font-size: 0.72rem;
+  color: #6f6f69;
+  text-align: center;
 }
 
 /* ---------- Progress / crawl log ---------- */
@@ -922,6 +1091,10 @@ body {
 
   .chat-topbar {
     flex-wrap: wrap;
+  }
+
+  .chat-sessions {
+    display: none;
   }
 
   .learning-grid {

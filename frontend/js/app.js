@@ -24,6 +24,11 @@
   const modelSelect = $("#model-select");
   const knowledgeList = $("#knowledge-list");
   const knowledgeEmpty = $("#knowledge-empty");
+  const sessionListEl = $("#session-list");
+  const newChatBtn = $("#new-chat-btn");
+  const chatTitle = $("#chat-title");
+  const micBtn = $("#mic-btn");
+  const voiceStatus = $("#voice-status");
 
   const STATUS_FA = {
     visiting: "در حال خواندن",
@@ -33,10 +38,14 @@
     failed: "ناموفق",
   };
 
-  const sessionId =
+  function newSessionId() {
+    return `نشست_${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  let currentSessionId =
     localStorage.getItem("javad_session") ||
     (() => {
-      const id = `نشست_${Math.random().toString(36).slice(2, 9)}`;
+      const id = newSessionId();
       localStorage.setItem("javad_session", id);
       return id;
     })();
@@ -69,6 +78,110 @@
   }
   viewButtons.forEach((btn) => {
     btn.addEventListener("click", () => showView(btn.dataset.view));
+  });
+
+  // ---------- Chat sessions (new / switch / rename) ----------
+
+  async function refreshSessions() {
+    try {
+      const res = await fetch("/api/sessions");
+      const data = await res.json();
+      renderSessionList(data.sessions || []);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  function renderSessionList(sessions) {
+    if (!sessions.length) {
+      sessionListEl.innerHTML = "";
+      return;
+    }
+    sessionListEl.innerHTML = sessions
+      .map((s) => {
+        const active = s.id === currentSessionId;
+        return `<li class="session-item${active ? " is-active" : ""}" data-session-id="${escapeHtml(s.id)}">
+          <div class="session-item-main">
+            <p class="session-item-title">${escapeHtml(s.title || "گفتگوی جدید")}</p>
+            ${s.preview ? `<p class="session-item-preview">${escapeHtml(s.preview)}</p>` : ""}
+          </div>
+          <button type="button" class="session-item-btn" data-rename-session="${escapeHtml(s.id)}" title="تغییر نام" aria-label="تغییر نام">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m16.5 3.5 4 4L7 21l-4.5 1 1-4.5L16.5 3.5Z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </li>`;
+      })
+      .join("");
+    sessionListEl.querySelectorAll("[data-session-id]").forEach((li) => {
+      li.addEventListener("click", (e) => {
+        if (e.target.closest("[data-rename-session]")) return;
+        switchSession(li.getAttribute("data-session-id"));
+      });
+    });
+    sessionListEl.querySelectorAll("[data-rename-session]").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute("data-rename-session");
+        const current = sessions.find((s) => s.id === id);
+        const title = prompt("نام جدید گفتگو:", current?.title || "");
+        if (!title || !title.trim()) return;
+        try {
+          const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/rename`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: title.trim() }),
+          });
+          if (!res.ok) throw new Error("تغییر نام ناموفق بود.");
+          if (id === currentSessionId) chatTitle.textContent = title.trim();
+          refreshSessions();
+        } catch (err) {
+          showToast(err.message || "تغییر نام ناموفق بود.", true);
+        }
+      });
+    });
+  }
+
+  async function switchSession(id) {
+    if (!id || id === currentSessionId) return;
+    currentSessionId = id;
+    localStorage.setItem("javad_session", id);
+    await loadSessionMessages(id);
+    refreshSessions();
+  }
+
+  async function loadSessionMessages(id) {
+    chatLog.innerHTML = "";
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
+      const data = await res.json();
+      const messages = Array.isArray(data.messages) ? data.messages : [];
+      if (!messages.length) {
+        appendBubble("javad", "جواد", "سلام! من جواد هستم. اسناد را بارگذاری کنید یا مستقیم با من حرف بزنید.");
+        return;
+      }
+      messages.forEach((m) => {
+        const role = m.role === "assistant" ? "javad" : "user";
+        appendBubble(role, role === "javad" ? "جواد" : "شما", m.content || "");
+      });
+    } catch {
+      appendBubble("javad", "جواد", "بارگذاری این گفتگو ممکن نشد.");
+    }
+  }
+
+  newChatBtn?.addEventListener("click", () => {
+    currentSessionId = newSessionId();
+    localStorage.setItem("javad_session", currentSessionId);
+    chatLog.innerHTML = "";
+    appendBubble("javad", "جواد", "سلام! من جواد هستم. اسناد را بارگذاری کنید یا مستقیم با من حرف بزنید.");
+    chatTitle.textContent = "گفتگوی زنده با جواد";
+    renderSessionList(
+      Array.from(sessionListEl.querySelectorAll("[data-session-id]")).map((li) => ({
+        id: li.getAttribute("data-session-id"),
+        title: li.querySelector(".session-item-title")?.textContent || "",
+        preview: li.querySelector(".session-item-preview")?.textContent || "",
+      }))
+    );
+    refreshSessions();
+    chatInput.focus();
   });
 
   function renderFiles() {
@@ -447,7 +560,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt,
-          session_id: sessionId,
+          session_id: currentSessionId,
           language: langSelect.value || "fa",
           model: modelSelect.value || null,
         }),
@@ -483,11 +596,165 @@
         }
       });
       if (!p.textContent) p.textContent = "پاسخی دریافت نشد.";
+      refreshSessions();
     } catch (err) {
       p.textContent = err.message || "خطایی رخ داد.";
     } finally {
       chatInput.disabled = false;
       chatInput.focus();
+    }
+  });
+
+  // ---------- Voice (mic -> STT -> chat -> TTS, over /ws/voip-stream) ----------
+
+  let voiceSocket = null;
+  let voiceAudioCtx = null;
+  let voiceStream = null;
+  let voiceProcessor = null;
+  let voiceRecording = false;
+  let voiceJavadBubble = null;
+
+  function floatTo16BitPCM(float32) {
+    const out = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return out;
+  }
+
+  function downsampleTo16k(float32, inputRate) {
+    if (inputRate === 16000) return float32;
+    const ratio = inputRate / 16000;
+    const outLength = Math.floor(float32.length / ratio);
+    const out = new Float32Array(outLength);
+    for (let i = 0; i < outLength; i++) {
+      out[i] = float32[Math.floor(i * ratio)];
+    }
+    return out;
+  }
+
+  function setVoiceStatus(text) {
+    if (!voiceStatus) return;
+    if (!text) {
+      voiceStatus.hidden = true;
+      voiceStatus.textContent = "";
+      return;
+    }
+    voiceStatus.hidden = false;
+    voiceStatus.textContent = text;
+  }
+
+  async function startVoice() {
+    try {
+      voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      showToast("دسترسی به میکروفون ممکن نشد.", true);
+      return;
+    }
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const params = new URLSearchParams({
+      session_id: currentSessionId,
+      language: langSelect.value || "fa",
+    });
+    voiceSocket = new WebSocket(`${proto}//${location.host}/ws/voip-stream?${params}`);
+    voiceSocket.binaryType = "arraybuffer";
+
+    voiceSocket.onopen = () => {
+      voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = voiceAudioCtx.createMediaStreamSource(voiceStream);
+      voiceProcessor = voiceAudioCtx.createScriptProcessor(4096, 1, 1);
+      const inputRate = voiceAudioCtx.sampleRate;
+      voiceProcessor.onaudioprocess = (e) => {
+        if (!voiceSocket || voiceSocket.readyState !== WebSocket.OPEN) return;
+        const input = e.inputBuffer.getChannelData(0);
+        const down = downsampleTo16k(input, inputRate);
+        const pcm16 = floatTo16BitPCM(down);
+        voiceSocket.send(pcm16.buffer);
+      };
+      const silentGain = voiceAudioCtx.createGain();
+      silentGain.gain.value = 0;
+      source.connect(voiceProcessor);
+      voiceProcessor.connect(silentGain);
+      silentGain.connect(voiceAudioCtx.destination);
+      voiceRecording = true;
+      micBtn.classList.add("is-recording");
+      setVoiceStatus("در حال گوش دادن… صحبت کنید");
+    };
+
+    voiceSocket.onmessage = (ev) => {
+      if (typeof ev.data !== "string") {
+        const blob = new Blob([ev.data], { type: "audio/wav" });
+        const audio = new Audio(URL.createObjectURL(blob));
+        audio.play().catch(() => {});
+        return;
+      }
+      let evt;
+      try {
+        evt = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (evt.type === "ready") {
+        if (evt.voice && evt.voice.stt === false) {
+          setVoiceStatus("موتور تشخیص گفتار در دسترس نیست.");
+        }
+      } else if (evt.type === "stt_start") {
+        setVoiceStatus("در حال تشخیص گفتار…");
+      } else if (evt.type === "transcript") {
+        setVoiceStatus("در حال فکر کردن…");
+        appendBubble("user", "شما", evt.text || "");
+      } else if (evt.type === "answer") {
+        voiceJavadBubble = appendBubble("javad", "جواد", evt.text || "");
+        attachCitations(voiceJavadBubble, evt.citations || [], evt.sources || []);
+        setVoiceStatus("در حال گوش دادن… صحبت کنید");
+        refreshSessions();
+      } else if (evt.type === "info") {
+        setVoiceStatus(evt.message || "");
+      } else if (evt.type === "error") {
+        showToast(evt.message || "خطا در ارتباط صوتی", true);
+        stopVoice();
+      }
+    };
+
+    voiceSocket.onclose = () => {
+      if (voiceRecording) stopVoice();
+    };
+    voiceSocket.onerror = () => {
+      showToast("ارتباط صوتی قطع شد.", true);
+      stopVoice();
+    };
+  }
+
+  function stopVoice() {
+    voiceRecording = false;
+    micBtn.classList.remove("is-recording");
+    setVoiceStatus("");
+    try {
+      voiceProcessor?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      voiceAudioCtx?.close();
+    } catch {
+      /* ignore */
+    }
+    voiceStream?.getTracks().forEach((t) => t.stop());
+    if (voiceSocket && voiceSocket.readyState === WebSocket.OPEN) {
+      voiceSocket.close();
+    }
+    voiceSocket = null;
+    voiceAudioCtx = null;
+    voiceStream = null;
+    voiceProcessor = null;
+  }
+
+  micBtn?.addEventListener("click", () => {
+    if (voiceRecording) {
+      stopVoice();
+    } else {
+      startVoice();
     }
   });
 
@@ -516,6 +783,24 @@
           return `<button type="button" class="chat-cite" title="${excerpt}" data-cite="${i}">[${i + 1}] ${title}</button>`;
         })
         .join(" ");
+    const allImages = [];
+    items.forEach((c) => {
+      (Array.isArray(c.images) ? c.images : []).forEach((src) => {
+        if (src && !allImages.includes(src)) allImages.push(src);
+      });
+    });
+    if (allImages.length) {
+      const imgWrap = document.createElement("div");
+      imgWrap.className = "chat-source-images";
+      imgWrap.innerHTML = allImages
+        .slice(0, 6)
+        .map(
+          (src) =>
+            `<a href="${escapeHtml(src)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(src)}" loading="lazy" alt="تصویر از منبع" /></a>`
+        )
+        .join("");
+      wrap.appendChild(imgWrap);
+    }
     bubble.querySelector(".chat-bubble-body").appendChild(wrap);
     wrap.querySelectorAll("button.chat-cite").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -609,4 +894,5 @@
 
   refreshHealth();
   refreshKnowledge();
+  refreshSessions();
 })();

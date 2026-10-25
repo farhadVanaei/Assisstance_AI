@@ -34,6 +34,9 @@ services:
       # Leave a couple of cores free for the rest of the desktop (browser, IDE, etc.)
       # instead of the model runner claiming every core. 0 = let Ollama decide.
       JAVAD_OLLAMA_NUM_THREAD: ${JAVAD_OLLAMA_NUM_THREAD:-0}
+      JAVAD_VOICE_ENABLED: ${JAVAD_VOICE_ENABLED:-true}
+      JAVAD_WHISPER_MODEL: ${JAVAD_WHISPER_MODEL:-base}
+      JAVAD_PIPER_MODEL: ${JAVAD_PIPER_MODEL:-voices/fa_IR-amir-medium.onnx}
       JAVAD_DATA_DIR: /data
       JAVAD_SQLITE_PATH: /data/javad.db
       JAVAD_CHROMA_PATH: /data/chroma

@@ -31,7 +31,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/styles.css?v=5" />
+  <link rel="stylesheet" href="/static/css/styles.css?v=6" />
 </head>
 <body class="bg-ink-50 text-ink-800 font-sans antialiased h-screen overflow-hidden">
   <div class="app-shell">
@@ -60,40 +60,54 @@
 
     <!-- View: chat -->
     <main id="view-chat" class="app-view app-view-chat">
-      <header class="chat-topbar">
-        <div class="min-w-0">
-          <h2 class="text-sm font-semibold text-ink-900">گفتگوی زنده با جواد</h2>
-          <p class="text-xs text-ink-400">به فارسی بنویسید؛ جواد کوتاه و طبیعی پاسخ می‌دهد</p>
-        </div>
-        <div class="flex items-center gap-2">
-          <select id="lang-select" class="field field-select">
-            <option value="fa" selected>فارسی</option>
-            <option value="en">English</option>
-            <option value="ar">العربية</option>
-          </select>
-          <select id="model-select" class="field field-select">
-            <option value="">پیش‌فرض سامانه</option>
-          </select>
-        </div>
-      </header>
+      <aside class="chat-sessions">
+        <button type="button" id="new-chat-btn" class="btn btn-primary w-full new-chat-btn">
+          <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5v14" stroke-linecap="round"/></svg>
+          گفتگوی جدید
+        </button>
+        <ul id="session-list" class="session-list" aria-live="polite"></ul>
+      </aside>
 
-      <div id="chat-log" class="chat-log">
-        <div class="chat-bubble javad">
-          <span class="chat-avatar" aria-hidden="true">ج</span>
-          <div class="chat-bubble-body">
-            <span class="chat-label">جواد</span>
-            <p>سلام! من جواد هستم. اسناد را بارگذاری کنید یا مستقیم با من حرف بزنید.</p>
+      <div class="chat-main">
+        <header class="chat-topbar">
+          <div class="min-w-0">
+            <h2 id="chat-title" class="text-sm font-semibold text-ink-900 truncate">گفتگوی زنده با جواد</h2>
+            <p class="text-xs text-ink-400">به فارسی بنویسید یا صحبت کنید؛ جواد کوتاه و طبیعی پاسخ می‌دهد</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="lang-select" class="field field-select">
+              <option value="fa" selected>فارسی</option>
+              <option value="en">English</option>
+              <option value="ar">العربية</option>
+            </select>
+            <select id="model-select" class="field field-select">
+              <option value="">پیش‌فرض سامانه</option>
+            </select>
+          </div>
+        </header>
+
+        <div id="chat-log" class="chat-log">
+          <div class="chat-bubble javad">
+            <span class="chat-avatar" aria-hidden="true">ج</span>
+            <div class="chat-bubble-body">
+              <span class="chat-label">جواد</span>
+              <p>سلام! من جواد هستم. اسناد را بارگذاری کنید یا مستقیم با من حرف بزنید.</p>
+            </div>
           </div>
         </div>
-      </div>
 
-      <form id="chat-form" class="chat-composer">
-        <textarea id="chat-input" rows="1" autocomplete="off" placeholder="پیام خود را بنویسید… (Enter برای ارسال)"
-          class="chat-input"></textarea>
-        <button type="submit" class="chat-send-btn" aria-label="ارسال">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-      </form>
+        <form id="chat-form" class="chat-composer">
+          <button type="button" id="mic-btn" class="mic-btn" aria-label="گفتگوی صوتی" title="صحبت کنید">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <textarea id="chat-input" rows="1" autocomplete="off" placeholder="پیام خود را بنویسید… (Enter برای ارسال)"
+            class="chat-input"></textarea>
+          <button type="submit" class="chat-send-btn" aria-label="ارسال">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M14 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </form>
+        <p id="voice-status" class="voice-status" hidden></p>
+      </div>
     </main>
 
     <!-- View: learning (knowledge base management) -->
@@ -193,6 +207,6 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script src="/static/js/app.js?v=5"></script>
+  <script src="/static/js/app.js?v=6"></script>
 </body>
 </html>

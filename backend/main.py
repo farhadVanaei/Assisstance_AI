@@ -710,6 +710,41 @@ async def delete_source(source_id: str, user_id: str = Depends(require_user)):
     }
 
 
+class RenameSessionRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=80)
+
+
+@app.get("/api/sessions")
+async def list_sessions(user_id: str = Depends(require_user)):
+    """فهرست گفتگوهای قبلی کاربر."""
+    sessions = get_agent(user_id).list_sessions()
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@app.get("/api/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str, user_id: str = Depends(require_user)):
+    messages = get_agent(user_id).store.get_history(session_id, user_id, limit=200)
+    return {"messages": messages}
+
+
+@app.post("/api/sessions/{session_id}/rename")
+async def rename_session(
+    session_id: str, body: RenameSessionRequest, user_id: str = Depends(require_user)
+):
+    ok = get_agent(user_id).rename_session(session_id, body.title)
+    if not ok:
+        raise HTTPException(status_code=404, detail="گفتگو پیدا نشد.")
+    return {"ok": True, "title": body.title.strip()[:80]}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str, user_id: str = Depends(require_user)):
+    ok = get_agent(user_id).delete_session(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="گفتگو پیدا نشد.")
+    return {"ok": True}
+
+
 @app.post("/api/reindex")
 async def reindex(user_id: str = Depends(require_user)):
     """بازسازی بردارهای امبدینگ برای تمام قطعه‌های دانش."""

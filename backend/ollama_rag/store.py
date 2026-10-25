@@ -108,6 +108,14 @@ class SQLiteStore:
                     content TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT 'default',
+                    title TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (id, user_id)
+                );
                 CREATE TABLE IF NOT EXISTS crawl_pages (
                     url TEXT PRIMARY KEY,
                     content_hash TEXT NOT NULL,
@@ -120,6 +128,7 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_sources_user ON sources(user_id);
                 CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_messages(session_id, user_id);
+                CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, updated_at);
                 """
             )
 
@@ -360,6 +369,72 @@ class SQLiteStore:
                 """,
                 (session_id, user_id, keep),
             )
+            row = conn.execute(
+                "SELECT id FROM chat_sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE chat_sessions SET updated_at = ? WHERE id = ? AND user_id = ?",
+                    (now, session_id, user_id),
+                )
+            else:
+                default_title = content.strip()[:60] if role == "user" else "گفتگوی جدید"
+                conn.execute(
+                    """
+                    INSERT INTO chat_sessions (id, user_id, title, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (session_id, user_id, default_title, now, now),
+                )
+
+    def list_sessions(self, user_id: str = "default") -> List[Dict[str, Any]]:
+        with self._lock, self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, title, created_at, updated_at FROM chat_sessions "
+                "WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,),
+            ).fetchall()
+            out = []
+            for r in rows:
+                last = conn.execute(
+                    "SELECT content FROM chat_messages WHERE session_id = ? AND user_id = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (r["id"], user_id),
+                ).fetchone()
+                out.append(
+                    {
+                        "id": r["id"],
+                        "title": r["title"] or "گفتگوی جدید",
+                        "created_at": r["created_at"],
+                        "updated_at": r["updated_at"],
+                        "preview": (last["content"][:80] if last else ""),
+                    }
+                )
+            return out
+
+    def rename_session(self, session_id: str, title: str, user_id: str = "default") -> bool:
+        title = (title or "").strip()[:80]
+        if not title:
+            return False
+        with self._lock, self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE chat_sessions SET title = ? WHERE id = ? AND user_id = ?",
+                (title, session_id, user_id),
+            )
+            return cur.rowcount > 0
+
+    def delete_session(self, session_id: str, user_id: str = "default") -> bool:
+        with self._lock, self._conn() as conn:
+            conn.execute(
+                "DELETE FROM chat_messages WHERE session_id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
+            cur = conn.execute(
+                "DELETE FROM chat_sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
+            return cur.rowcount > 0
 
     def clear_history(self, session_id: Optional[str] = None, user_id: str = "default") -> None:
         with self._lock, self._conn() as conn:
@@ -368,8 +443,13 @@ class SQLiteStore:
                     "DELETE FROM chat_messages WHERE session_id = ? AND user_id = ?",
                     (session_id, user_id),
                 )
+                conn.execute(
+                    "DELETE FROM chat_sessions WHERE id = ? AND user_id = ?",
+                    (session_id, user_id),
+                )
             else:
                 conn.execute("DELETE FROM chat_messages WHERE user_id = ?", (user_id,))
+                conn.execute("DELETE FROM chat_sessions WHERE user_id = ?", (user_id,))
 
     # --- crawl cache for re-crawl diffing ---
 
