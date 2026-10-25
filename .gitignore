@@ -16,3 +16,4 @@ backend/data/*
 .chroma/
 *.db
 .env
+.omc/

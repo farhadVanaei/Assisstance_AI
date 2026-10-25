@@ -24,9 +24,24 @@ def test_ingest_and_retrieve(agent):
     added = agent.ingest(text, "spot.txt", "text")
     assert added > 0
     assert agent.document_count == added
+    # A second, unrelated document keeps BM25's IDF term meaningful — with only a
+    # single document in the corpus, BM25's IDF math goes pathologically negative
+    # for any term present (a known degenerate case for tiny corpora), which would
+    # mask whether retrieval is actually discriminating relevant from irrelevant.
+    agent.ingest(
+        ("دستور پخت قورمه سبزی شامل سبزی معطر، لوبیا قرمز و گوشت است. "
+         "این غذای سنتی ایرانی با برنج سرو می‌شود. ") * 3,
+        "recipe.txt",
+        "text",
+    )
     hits = agent._retrieve("SPOT چیست")
     assert hits
     assert any("SPOT" in c.text or "spot" in c.source.lower() for c in hits)
+    # The relevant chunk must rank above the unrelated one, even if the hash-fallback
+    # embedding (used here since no real Ollama is running in tests) is too noisy to
+    # guarantee the irrelevant chunk is excluded outright.
+    top = hits[0]
+    assert "SPOT" in top.text or "spot" in top.source.lower()
 
 
 def test_chunk_overlap():

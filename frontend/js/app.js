@@ -1,8 +1,8 @@
 (() => {
   const $ = (s) => document.querySelector(s);
-  const tabs = document.querySelectorAll(".tab-btn");
-  const panelKnowledge = $("#panel-knowledge");
-  const panelChat = $("#panel-chat");
+  const viewButtons = document.querySelectorAll(".view-switch-btn");
+  const viewChat = $("#view-chat");
+  const viewLearning = $("#view-learning");
   const dropzone = $("#dropzone");
   const fileInput = $("#file-input");
   const fileList = $("#file-list");
@@ -29,6 +29,7 @@
     visiting: "در حال خواندن",
     learned: "آموخته شد",
     skipped: "رد شد",
+    unchanged: "بدون تغییر",
     failed: "ناموفق",
   };
 
@@ -43,9 +44,6 @@
   if (localStorage.getItem("javad_lang")) {
     langSelect.value = localStorage.getItem("javad_lang");
   }
-  if (localStorage.getItem("javad_model")) {
-    // populated after config load
-  }
 
   langSelect.addEventListener("change", () => {
     localStorage.setItem("javad_lang", langSelect.value);
@@ -58,18 +56,19 @@
   /** @type {Map<string, {url:string,status:string,depth:number,title:string,domain:string}>} */
   let crawlRows = new Map();
 
-  tabs.forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const tab = btn.dataset.tab;
-      tabs.forEach((b) => {
-        b.classList.toggle("active", b === btn);
-        b.setAttribute("aria-selected", b === btn ? "true" : "false");
-      });
-      panelKnowledge.classList.toggle("hidden", tab !== "knowledge");
-      panelChat.classList.toggle("hidden", tab !== "chat");
-      if (tab === "chat") chatInput.focus();
-      if (tab === "knowledge") refreshKnowledge();
+  function showView(view) {
+    viewButtons.forEach((b) => {
+      const active = b.dataset.view === view;
+      b.classList.toggle("is-active", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
     });
+    viewChat.hidden = view !== "chat";
+    viewLearning.hidden = view !== "learning";
+    if (view === "chat") chatInput.focus();
+    if (view === "learning") refreshKnowledge();
+  }
+  viewButtons.forEach((btn) => {
+    btn.addEventListener("click", () => showView(btn.dataset.view));
   });
 
   function renderFiles() {
@@ -107,6 +106,7 @@
     const pct = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
     progressWrap.hidden = false;
     progressWrap.classList.toggle("is-done", state === "done");
+    progressWrap.classList.toggle("is-warning", state === "warning");
     progressWrap.classList.toggle("is-error", state === "error");
     progressBar.style.width = `${pct}%`;
     progressPct.textContent = `${pct}٪`;
@@ -118,7 +118,7 @@
     clearTimeout(hideProgressSoon._t);
     hideProgressSoon._t = setTimeout(() => {
       progressWrap.hidden = true;
-      progressWrap.classList.remove("is-done", "is-error");
+      progressWrap.classList.remove("is-done", "is-warning", "is-error");
       progressBar.style.width = "0%";
     }, delay);
   }
@@ -133,9 +133,14 @@
   function upsertCrawlLink(link) {
     if (!link || !link.url) return;
     const prev = crawlRows.get(link.url);
-    const rank = { visiting: 1, skipped: 2, failed: 2, learned: 3 };
+    const rank = { visiting: 1, skipped: 2, unchanged: 2, failed: 2, learned: 3 };
     if (prev && (rank[prev.status] || 0) > (rank[link.status] || 0)) {
-      link = { ...link, status: prev.status, title: link.title || prev.title };
+      link = {
+        ...link,
+        status: prev.status,
+        title: link.title || prev.title,
+        reason: link.reason || prev.reason,
+      };
     }
     crawlRows.set(link.url, {
       url: link.url,
@@ -143,6 +148,7 @@
       depth: Number(link.depth) || 0,
       title: link.title || (prev && prev.title) || "",
       domain: link.domain || (prev && prev.domain) || "",
+      reason: link.reason || (prev && prev.reason) || "",
     });
     renderCrawlLog();
   }
@@ -157,9 +163,11 @@
     const learned = rows.filter((r) => r.status === "learned").length;
     const failed = rows.filter((r) => r.status === "failed").length;
     const skipped = rows.filter((r) => r.status === "skipped").length;
+    const unchanged = rows.filter((r) => r.status === "unchanged").length;
     const domain = rows.find((r) => r.domain)?.domain || "";
     crawlLogSummary.textContent = domain
       ? `دامنه: ${domain} · بازدید: ${rows.length} · آموخته: ${learned}` +
+        (unchanged ? ` · بدون‌تغییر: ${unchanged}` : "") +
         (skipped ? ` · ردشده: ${skipped}` : "") +
         (failed ? ` · ناموفق: ${failed}` : "")
       : `بازدید: ${rows.length} · آموخته: ${learned}`;
@@ -168,10 +176,14 @@
       .map((r) => {
         const status = STATUS_FA[r.status] || r.status;
         const titleBit = r.title ? escapeHtml(r.title) : "بدون عنوان";
+        const reasonBit = r.reason
+          ? `<span class="crawl-log-reason">${escapeHtml(r.reason)}</span>`
+          : "";
         return `<li class="crawl-log-item">
           <span class="crawl-log-status is-${escapeHtml(r.status)}">${escapeHtml(status)}</span>
           <span class="crawl-log-url" dir="ltr">${escapeHtml(r.url)}</span>
           <span class="crawl-log-meta">عمق ${r.depth} · ${titleBit}</span>
+          ${reasonBit}
         </li>`;
       })
       .join("");
@@ -226,6 +238,8 @@
 
     let finalMessage = "";
     let failed = false;
+    /** @type {{source:string, chunks_added:number, message:string}[]} */
+    const itemResults = [];
 
     try {
       const res = await fetch("/api/rag/upload/stream", { method: "POST", body: form });
@@ -255,13 +269,13 @@
           setProgress(evt.percent ?? 100, finalMessage, "error");
         } else if (evt.type === "done") {
           finalMessage = evt.message || "یادگیری کامل شد.";
-          setProgress(100, finalMessage, "done");
           const results = Array.isArray(evt.results) ? evt.results : [];
           results.forEach((r) => {
             if (Array.isArray(r.crawl_log)) r.crawl_log.forEach((row) => upsertCrawlLink(row));
           });
         } else if (evt.type === "item" && evt.result) {
           const r = evt.result;
+          itemResults.push(r);
           if (Array.isArray(r.crawl_log)) r.crawl_log.forEach((row) => upsertCrawlLink(row));
         }
       });
@@ -269,8 +283,31 @@
       if (failed) throw new Error(finalMessage || "خطا در یادگیری");
       if (!finalMessage) finalMessage = "یادگیری کامل شد.";
 
+      // Files that produced zero new chunks are duplicates already in the
+      // knowledge base — surface that distinctly instead of letting it blend
+      // into a generic "learning complete" success message.
+      const duplicates = itemResults.filter((r) => (r.chunks_added || 0) === 0);
+      const learned = itemResults.filter((r) => (r.chunks_added || 0) > 0);
+      const allDuplicates = itemResults.length > 0 && duplicates.length === itemResults.length;
+
       ingestStatus.textContent = finalMessage;
-      showToast(finalMessage);
+
+      if (duplicates.length) {
+        const names = duplicates.map((r) => `«${r.source}»`).join("، ");
+        const warnMsg = allDuplicates
+          ? `قبلاً آموخته شده بود، چیز جدیدی اضافه نشد: ${names}`
+          : `این مورد تکراری بود و اضافه نشد: ${names}`;
+        setProgress(100, finalMessage, allDuplicates ? "warning" : "done");
+        showToast(warnMsg, false, true);
+        if (learned.length) {
+          // Also show the normal success toast for whatever genuinely got added.
+          setTimeout(() => showToast(finalMessage), 300);
+        }
+      } else {
+        setProgress(100, finalMessage, "done");
+        showToast(finalMessage);
+      }
+
       selectedFiles = [];
       fileInput.value = "";
       websiteUrl.value = "";
@@ -329,12 +366,18 @@
           const date = s.updated_at
             ? new Date(s.updated_at * 1000).toLocaleString("fa-IR")
             : "";
-          return `<li class="knowledge-item flex items-start justify-between gap-3 border border-ink-100 px-3 py-2">
+          const url = typeof s.url === "string" ? s.url.trim() : "";
+          const safeUrl = /^https?:\/\//i.test(url) ? escapeHtml(url) : "";
+          const linkBit = safeUrl
+            ? `<p class="text-xs mt-0.5"><a class="chat-cite" href="${safeUrl}" target="_blank" rel="noopener noreferrer" dir="ltr">${safeUrl}</a></p>`
+            : "";
+          return `<li class="knowledge-item">
             <div class="min-w-0">
-              <p class="font-medium text-ink-700 truncate">${escapeHtml(s.name)}</p>
+              <p class="text-sm font-medium text-ink-700 truncate">${escapeHtml(s.name)}</p>
               <p class="text-xs text-ink-400 mt-0.5">${escapeHtml(s.kind)} · ${s.chunk_count || 0} قطعه${date ? " · " + date : ""}</p>
+              ${linkBit}
             </div>
-            <button type="button" class="shrink-0 text-xs text-red-800 border border-red-200 px-2 py-1 hover:bg-red-50" data-delete-source="${escapeHtml(s.id)}">حذف</button>
+            <button type="button" class="source-delete-btn" data-delete-source="${escapeHtml(s.id)}">حذف</button>
           </li>`;
         })
         .join("");
@@ -359,18 +402,31 @@
     }
   }
 
+  function autoGrow() {
+    chatInput.style.height = "auto";
+    chatInput.style.height = `${Math.min(chatInput.scrollHeight, 144)}px`;
+  }
+  chatInput.addEventListener("input", autoGrow);
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      chatForm.requestSubmit();
+    }
+  });
+
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const prompt = chatInput.value.trim();
     if (!prompt) return;
     appendBubble("user", "شما", prompt);
     chatInput.value = "";
+    autoGrow();
     chatInput.disabled = true;
-    const bubble = appendBubble("javad", "جواد", "");
+    const bubble = appendBubble("javad", "جواد", "", { typing: true });
     const p = bubble.querySelector("p");
-    p.textContent = "";
     let citations = [];
     let sources = [];
+    let gotToken = false;
     try {
       const res = await fetch("/api/ollama/chat/stream", {
         method: "POST",
@@ -393,6 +449,10 @@
           citations = evt.citations || [];
           sources = evt.sources || [];
         } else if (evt.type === "token") {
+          if (!gotToken) {
+            gotToken = true;
+            p.innerHTML = "";
+          }
           if (evt.replace) {
             full = evt.text || "";
           } else {
@@ -422,7 +482,9 @@
     if (existing) existing.remove();
     const items = Array.isArray(citations) && citations.length
       ? citations
-      : (sources || []).map((s) => ({ source: s, excerpt: "" }));
+      : (sources || []).map((s) =>
+          typeof s === "string" ? { source: s, excerpt: "", url: "" } : s
+        );
     if (!items.length) return;
     const wrap = document.createElement("div");
     wrap.className = "chat-sources";
@@ -431,12 +493,17 @@
       items
         .map((c, i) => {
           const title = escapeHtml(c.source || "منبع");
-          const excerpt = c.excerpt ? ` — ${escapeHtml(c.excerpt)}` : "";
+          const excerpt = c.excerpt ? escapeHtml(c.excerpt) : "";
+          const url = typeof c.url === "string" ? c.url.trim() : "";
+          const safeUrl = /^https?:\/\//i.test(url) ? escapeHtml(url) : "";
+          if (safeUrl) {
+            return `<a class="chat-cite" href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${excerpt || safeUrl}">[${i + 1}] ${title}</a>`;
+          }
           return `<button type="button" class="chat-cite" title="${excerpt}" data-cite="${i}">[${i + 1}] ${title}</button>`;
         })
         .join(" ");
-    bubble.appendChild(wrap);
-    wrap.querySelectorAll(".chat-cite").forEach((btn) => {
+    bubble.querySelector(".chat-bubble-body").appendChild(wrap);
+    wrap.querySelectorAll("button.chat-cite").forEach((btn) => {
       btn.addEventListener("click", () => {
         const idx = Number(btn.getAttribute("data-cite"));
         const c = items[idx];
@@ -448,6 +515,7 @@
 
   async function refreshHealth() {
     const badge = $("#ollama-badge");
+    const dots = [$("#ollama-dot")].filter(Boolean);
     try {
       const res = await fetch("/api/health");
       const data = await res.json();
@@ -458,6 +526,10 @@
       if (data.vector_store) bits.push(`بردار: ${data.vector_store}`);
       if (data.embed_ok) bits.push("امبدینگ آماده");
       badge.textContent = bits.join(" · ");
+      dots.forEach((d) => {
+        d.classList.toggle("is-ok", !!data.ollama);
+        d.classList.toggle("is-down", !data.ollama);
+      });
       if (Array.isArray(data.models) && data.models.length) {
         const current = localStorage.getItem("javad_model") || "";
         const opts = ['<option value="">پیش‌فرض سامانه</option>'].concat(
@@ -471,24 +543,30 @@
       }
     } catch {
       badge.textContent = "وضعیت سامانه مشخص نیست.";
+      dots.forEach((d) => d.classList.remove("is-ok", "is-down"));
     }
   }
 
-  function appendBubble(role, label, text) {
+  function appendBubble(role, label, text, { typing = false } = {}) {
     const el = document.createElement("div");
     el.className = `chat-bubble ${role}`;
-    el.innerHTML = `<span class="chat-label">${escapeHtml(label)}</span><p></p>`;
-    el.querySelector("p").textContent = text;
+    const avatar = role === "javad" ? "ج" : "شما";
+    const body = typing
+      ? '<span class="typing-dots"><span></span><span></span><span></span></span>'
+      : "";
+    el.innerHTML = `<span class="chat-avatar">${escapeHtml(avatar)}</span><div class="chat-bubble-body"><span class="chat-label">${escapeHtml(label)}</span><p>${body}</p></div>`;
+    if (!typing) el.querySelector("p").textContent = text;
     chatLog.appendChild(el);
     chatLog.scrollTop = chatLog.scrollHeight;
     return el;
   }
 
-  function showToast(message, isError = false) {
+  function showToast(message, isError = false, isWarning = false) {
     const toast = $("#toast");
     toast.hidden = false;
     toast.textContent = message;
     toast.classList.toggle("toast-error", !!isError);
+    toast.classList.toggle("toast-warning", !!isWarning && !isError);
     toast.classList.add("toast-show");
     clearTimeout(showToast._t);
     showToast._t = setTimeout(() => {

@@ -202,6 +202,11 @@ class JavadOllamaAgent:
         self.reload_cache()
         return len(records)
 
+    def _fallback_dim(self) -> int:
+        """Match the collection's existing embedding dimension so a transient Ollama
+        outage never produces a vector of the wrong size for the active collection."""
+        return self.vectors.expected_dim() or 384
+
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
         vectors = ollama_client.embed_sync(texts, model=EMBED_MODEL)
         if vectors and len(vectors) == len(texts):
@@ -209,7 +214,8 @@ class JavadOllamaAgent:
             return vectors
         logger.warning("Ollama embeddings unavailable; using hash fallback")
         self._embed_model_used = "hash-fallback"
-        return [hash_embed(t) for t in texts]
+        dim = self._fallback_dim()
+        return [hash_embed(t, dim=dim) for t in texts]
 
     async def _embed_texts_async(self, texts: List[str]) -> List[List[float]]:
         vectors = await ollama_client.embed(texts, model=EMBED_MODEL)
@@ -217,7 +223,8 @@ class JavadOllamaAgent:
             self._embed_model_used = EMBED_MODEL
             return vectors
         self._embed_model_used = "hash-fallback"
-        return [hash_embed(t) for t in texts]
+        dim = self._fallback_dim()
+        return [hash_embed(t, dim=dim) for t in texts]
 
     async def reindex(self) -> Dict[str, Any]:
         """Re-embed all chunks (e.g. after embedding model change)."""
@@ -305,7 +312,7 @@ class JavadOllamaAgent:
 
         results: List[Chunk] = []
         for cid, score in reranked:
-            if score < RELEVANCE_THRESHOLD and results:
+            if score < RELEVANCE_THRESHOLD:
                 continue
             chunk = self._chunk_cache.get(cid)
             if not chunk:
@@ -323,21 +330,11 @@ class JavadOllamaAgent:
             if len(results) >= top_k:
                 break
 
-        # If nothing passed threshold, still return best chunk so fallback has context
-        if not results and ranked:
-            cid, score = ranked[0]
-            chunk = self._chunk_cache.get(cid)
-            if chunk:
-                results.append(
-                    Chunk(
-                        id=chunk.id,
-                        source=chunk.source,
-                        text=chunk.text,
-                        kind=chunk.kind,
-                        source_id=chunk.source_id,
-                        score=score,
-                    )
-                )
+        # Deliberately do NOT force-return a below-threshold chunk when nothing
+        # clears the bar: serving the single best-scoring-but-irrelevant chunk makes
+        # the answer look like it addresses the question while actually ignoring it
+        # (e.g. an unrelated article confidently presented as the answer). An honest
+        # "I don't know" is better than a fluent non-sequitur.
         return results
 
     def _history(self, session_id: str) -> List[Dict[str, str]]:

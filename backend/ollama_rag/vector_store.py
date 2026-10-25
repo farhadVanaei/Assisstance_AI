@@ -47,6 +47,7 @@ class VectorStore:
         # Fallback in-memory index when chromadb is missing
         self._fallback: Dict[str, Tuple[List[float], Dict]] = {}
         self._use_chroma = False
+        self._dim: Optional[int] = None
         self._init()
 
     def _init(self) -> None:
@@ -72,6 +73,24 @@ class VectorStore:
     def backend(self) -> str:
         return "chromadb" if self._use_chroma else "memory"
 
+    def expected_dim(self) -> Optional[int]:
+        """Return the embedding dimension this collection already expects, if any."""
+        if self._dim is not None:
+            return self._dim
+        with self._lock:
+            if self._use_chroma and self._col is not None:
+                try:
+                    peek = self._col.peek(limit=1)
+                    vecs = peek.get("embeddings")
+                    if vecs is not None and len(vecs) > 0 and vecs[0] is not None:
+                        self._dim = len(vecs[0])
+                except Exception:
+                    pass
+            elif self._fallback:
+                any_vec = next(iter(self._fallback.values()))[0]
+                self._dim = len(any_vec)
+        return self._dim
+
     def upsert(
         self,
         ids: Sequence[str],
@@ -83,15 +102,32 @@ class VectorStore:
             return
         with self._lock:
             if self._use_chroma and self._col is not None:
-                self._col.upsert(
-                    ids=list(ids),
-                    embeddings=[list(e) for e in embeddings],
-                    documents=list(documents),
-                    metadatas=[{k: ("" if v is None else v) for k, v in m.items()} for m in metadatas],
-                )
-            else:
-                for i, eid in enumerate(ids):
-                    self._fallback[eid] = (list(embeddings[i]), dict(metadatas[i]))
+                try:
+                    self._col.upsert(
+                        ids=list(ids),
+                        embeddings=[list(e) for e in embeddings],
+                        documents=list(documents),
+                        metadatas=[
+                            {k: ("" if v is None else v) for k, v in m.items()} for m in metadatas
+                        ],
+                    )
+                    if embeddings and embeddings[0] is not None:
+                        self._dim = len(embeddings[0])
+                    return
+                except Exception as exc:
+                    logger.error(
+                        "Vector upsert failed (likely embedding dimension mismatch: %s); "
+                        "keeping text/BM25 retrieval working via in-memory fallback instead "
+                        "of failing the whole request.",
+                        exc,
+                    )
+                    for i, eid in enumerate(ids):
+                        self._fallback[eid] = (list(embeddings[i]), dict(metadatas[i]))
+                    return
+            for i, eid in enumerate(ids):
+                self._fallback[eid] = (list(embeddings[i]), dict(metadatas[i]))
+                if embeddings[i] is not None:
+                    self._dim = len(embeddings[i])
 
     def delete(self, ids: Sequence[str]) -> None:
         if not ids:
@@ -147,6 +183,7 @@ class VectorStore:
                     metadata={"hnsw:space": "cosine"},
                 )
             self._fallback.clear()
+            self._dim = None
 
     def query(
         self,

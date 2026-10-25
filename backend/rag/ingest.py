@@ -144,6 +144,21 @@ async def ingest_url(url: str, timeout: float = 20.0) -> dict:
 
 
 def _extract_pdf(data: bytes) -> str:
+    # pypdf frequently drops word spacing and/or mis-orders RTL (Persian/Arabic)
+    # text, corrupting tokenization-based retrieval; PyMuPDF handles both correctly.
+    try:
+        import pymupdf
+
+        text_parts = []
+        with pymupdf.open(stream=data, filetype="pdf") as doc:
+            for page in doc:
+                text_parts.append(page.get_text() or "")
+        text = "\n".join(text_parts).strip()
+        if text:
+            return text
+    except Exception as exc:
+        logger.info("pymupdf extraction failed, falling back to pypdf: %s", exc)
+
     reader = PdfReader(io.BytesIO(data))
     pages = []
     for page in reader.pages:

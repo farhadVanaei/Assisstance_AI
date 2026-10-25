@@ -1,6 +1,13 @@
 services:
   ollama:
     image: ollama/ollama:latest
+    environment:
+      # Keep at most 2 models resident (chat + embedding — together ~2.3GB with llama3.2).
+      # On memory-constrained hosts, letting a 3rd/4th model (e.g. a larger chat model
+      # pulled for later use) stay loaded alongside these causes severe swapping and
+      # multi-minute response times instead of a clean, bounded memory footprint.
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_KEEP_ALIVE: "5m"
     volumes:
       - ollama_data:/root/.ollama
     ports:
@@ -8,6 +15,7 @@ services:
     # After first start, pull models:
     #   docker compose exec ollama ollama pull llama3.2
     #   docker compose exec ollama ollama pull nomic-embed-text
+    #   docker compose exec ollama ollama pull qwen2.5:7b-instruct   # optional, needs more RAM
     restart: unless-stopped
 
   javad:
@@ -15,9 +23,17 @@ services:
     ports:
       - "8000:8000"
     environment:
-      OLLAMA_HOST: http://ollama:11434
+      # Deliberately NOT ${OLLAMA_HOST:-...}: that variable is also read by `uvicorn`
+      # when run directly on the host (via .env + python-dotenv) and needs a different
+      # value there (http://127.0.0.1:11434) than inside this container
+      # (http://ollama:11434, the Compose service name). Keeping them under separate
+      # variable names means editing .env for host runs can't silently break Compose.
+      OLLAMA_HOST: ${JAVAD_DOCKER_OLLAMA_HOST:-http://ollama:11434}
       JAVAD_OLLAMA_MODEL: ${JAVAD_OLLAMA_MODEL:-llama3.2}
       JAVAD_OLLAMA_EMBED_MODEL: ${JAVAD_OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      # Leave a couple of cores free for the rest of the desktop (browser, IDE, etc.)
+      # instead of the model runner claiming every core. 0 = let Ollama decide.
+      JAVAD_OLLAMA_NUM_THREAD: ${JAVAD_OLLAMA_NUM_THREAD:-0}
       JAVAD_DATA_DIR: /data
       JAVAD_SQLITE_PATH: /data/javad.db
       JAVAD_CHROMA_PATH: /data/chroma
@@ -25,6 +41,8 @@ services:
       JAVAD_API_KEY: ${JAVAD_API_KEY:-}
       JAVAD_CORS_ORIGINS: ${JAVAD_CORS_ORIGINS:-http://127.0.0.1:8000,http://localhost:8000}
       JAVAD_CORS_ALLOW_ALL: ${JAVAD_CORS_ALLOW_ALL:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - javad_data:/data
       - ./backend/uploads:/app/backend/uploads

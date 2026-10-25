@@ -242,6 +242,11 @@ async def _ingest_files_with_progress(
             pages=0,
         )
         results.append(item.model_dump())
+        progress_label = (
+            f"آموخته شد: «{name}» ({idx} از {total})"
+            if added
+            else f"تکراری بود، رد شد: «{name}» ({idx} از {total})"
+        )
         yield _ndjson(
             {
                 "type": "progress",
@@ -249,7 +254,7 @@ async def _ingest_files_with_progress(
                 "current": idx,
                 "total": total,
                 "percent": int(100 * idx / total),
-                "message": f"آموخته شد: «{name}» ({idx} از {total})",
+                "message": progress_label,
             }
         )
         yield _ndjson({"type": "item", "result": item.model_dump()})
