@@ -3,20 +3,42 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import logging
 from pathlib import Path
-from typing import Optional, Set
+from typing import List, Optional, Set
 from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
-from ollama_rag.config import MAX_UPLOAD_BYTES
+from ollama_rag.config import MAX_UPLOAD_BYTES, MEDIA_DIR
 
 logger = logging.getLogger("javad.ingest")
+
+# Skip tiny embedded images (icons, bullets, tracking pixels) — not worth surfacing.
+_MIN_IMAGE_DIM = 80
+
+
+def _save_media(data: bytes, ext: str) -> Optional[str]:
+    """Save extracted image bytes under MEDIA_DIR, content-hashed for dedup.
+    Returns a URL path (e.g. "/media/<hash>.png") or None on failure."""
+    if not data:
+        return None
+    ext = (ext or "png").lstrip(".").lower() or "png"
+    digest = hashlib.sha256(data).hexdigest()[:24]
+    filename = f"{digest}.{ext}"
+    try:
+        path = MEDIA_DIR / filename
+        if not path.exists():
+            path.write_bytes(data)
+        return f"/media/{filename}"
+    except Exception as exc:
+        logger.info("Failed to save extracted image: %s", exc)
+        return None
 
 SUPPORTED_SUFFIXES: Set[str] = {
     ".pdf",
@@ -74,22 +96,28 @@ def validate_upload(filename: str, data: bytes) -> str:
 
 async def ingest_file(filename: str, data: bytes) -> dict:
     suffix = validate_upload(filename, data)
+    images: List[str] = []
 
     if suffix == ".pdf":
         text = _extract_pdf(data)
         kind = "pdf"
+        images = _extract_pdf_images(data)
     elif suffix in {".html", ".htm"}:
         text = _extract_html(data.decode("utf-8", errors="ignore"))
         kind = "html"
     elif suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
         text = _extract_image_ocr(filename, data)
         kind = "image"
+        saved = _save_media(data, Path(filename).suffix)
+        if saved:
+            images = [saved]
     elif suffix in {".txt", ".md"}:
         text = data.decode("utf-8", errors="ignore")
         kind = "text"
     elif suffix == ".docx":
         text = _extract_docx(data)
         kind = "docx"
+        images = _extract_docx_images(data)
     elif suffix == ".pptx":
         text = _extract_pptx(data)
         kind = "pptx"
@@ -113,6 +141,7 @@ async def ingest_file(filename: str, data: bytes) -> dict:
         "kind": kind,
         "text": text,
         "chars": len(text),
+        "images": images,
     }
 
 
@@ -164,6 +193,39 @@ def _extract_pdf(data: bytes) -> str:
     for page in reader.pages:
         pages.append(page.extract_text() or "")
     return "\n".join(pages).strip()
+
+
+def _extract_pdf_images(data: bytes, max_images: int = 10) -> List[str]:
+    """Extract embedded raster images from a PDF (not full-page renders)."""
+    try:
+        import pymupdf
+    except Exception as exc:
+        logger.info("pymupdf unavailable for image extraction: %s", exc)
+        return []
+
+    urls: List[str] = []
+    try:
+        with pymupdf.open(stream=data, filetype="pdf") as doc:
+            for page in doc:
+                for img in page.get_images(full=True):
+                    if len(urls) >= max_images:
+                        return urls
+                    xref = img[0]
+                    try:
+                        info = doc.extract_image(xref)
+                    except Exception:
+                        continue
+                    img_bytes = info.get("image")
+                    width = info.get("width") or 0
+                    height = info.get("height") or 0
+                    if not img_bytes or width < _MIN_IMAGE_DIM or height < _MIN_IMAGE_DIM:
+                        continue
+                    saved = _save_media(img_bytes, info.get("ext") or "png")
+                    if saved and saved not in urls:
+                        urls.append(saved)
+    except Exception as exc:
+        logger.info("PDF image extraction failed: %s", exc)
+    return urls
 
 
 def _extract_html(html: str) -> str:
@@ -242,6 +304,37 @@ def _extract_docx(data: bytes) -> str:
             if cells:
                 parts.append(" | ".join(cells))
     return "\n".join(parts).strip()
+
+
+def _extract_docx_images(data: bytes, max_images: int = 10) -> List[str]:
+    """Extract embedded images from a .docx via its package relationships."""
+    try:
+        from docx import Document
+    except Exception as exc:
+        logger.info("python-docx unavailable for image extraction: %s", exc)
+        return []
+
+    urls: List[str] = []
+    try:
+        doc = Document(io.BytesIO(data))
+        for rel in doc.part.rels.values():
+            if "image" not in rel.reltype:
+                continue
+            if len(urls) >= max_images:
+                break
+            try:
+                img_bytes = rel.target_part.blob
+                ext = Path(rel.target_part.partname).suffix or ".png"
+            except Exception:
+                continue
+            if len(img_bytes) < 1024:  # skip tiny decorative images
+                continue
+            saved = _save_media(img_bytes, ext)
+            if saved and saved not in urls:
+                urls.append(saved)
+    except Exception as exc:
+        logger.info("DOCX image extraction failed: %s", exc)
+    return urls
 
 
 def _extract_pptx(data: bytes) -> str:

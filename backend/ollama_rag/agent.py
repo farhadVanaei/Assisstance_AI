@@ -106,18 +106,23 @@ class JavadOllamaAgent:
         return len(self._chunk_cache)
 
     def list_sources(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "id": s.id,
-                "name": s.name,
-                "kind": s.kind,
-                "chunk_count": s.chunk_count,
-                "created_at": s.created_at,
-                "updated_at": s.updated_at,
-                "expires_at": s.expires_at,
-            }
-            for s in self.store.list_sources(self.user_id)
-        ]
+        result = []
+        for s in self.store.list_sources(self.user_id):
+            meta = s.meta or {}
+            result.append(
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "kind": s.kind,
+                    "chunk_count": s.chunk_count,
+                    "created_at": s.created_at,
+                    "updated_at": s.updated_at,
+                    "expires_at": s.expires_at,
+                    "url": str(meta.get("url") or ""),
+                    "images": list(meta.get("images") or []),
+                }
+            )
+        return result
 
     def delete_source(self, source_id: str) -> Dict[str, Any]:
         src = self.store.get_source(source_id, self.user_id)

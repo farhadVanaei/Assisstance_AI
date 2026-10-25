@@ -403,6 +403,41 @@ body {
   display: block;
 }
 
+.knowledge-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.knowledge-thumbs img {
+  width: 2.75rem;
+  height: 2.75rem;
+  object-fit: cover;
+  border-radius: 0.4rem;
+  border: 1px solid #e2e2df;
+  background: #efefed;
+  display: block;
+  transition: transform 0.12s ease;
+}
+
+.knowledge-thumbs a:hover img {
+  transform: scale(1.06);
+}
+
+.knowledge-thumbs-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.4rem;
+  background: #efefed;
+  color: #6f6f69;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
 .empty-hint {
   display: none;
   font-size: 0.75rem;

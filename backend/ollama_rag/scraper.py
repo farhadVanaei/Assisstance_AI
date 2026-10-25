@@ -234,7 +234,38 @@ def _strip_chrome(soup: BeautifulSoup) -> None:
             continue
 
 
-def _page_text(soup: BeautifulSoup) -> Tuple[str, str]:
+_ICON_HINT_RE = re.compile(r"(icon|logo|sprite|avatar|pixel|spacer|1x1|blank)", re.I)
+
+
+def _page_images(root: BeautifulSoup) -> List[str]:
+    """Collect <img> sources from the main content area, skipping obvious icons."""
+    if root is None:
+        return []
+    found: List[str] = []
+    seen: Set[str] = set()
+    for img in root.find_all("img"):
+        src = (img.get("src") or img.get("data-src") or "").strip()
+        if not src or src.startswith("data:"):
+            continue
+        if _ICON_HINT_RE.search(src):
+            continue
+        try:
+            width = int(img.get("width") or 0)
+            height = int(img.get("height") or 0)
+            if 0 < width <= 32 or 0 < height <= 32:
+                continue
+        except ValueError:
+            pass
+        if src in seen:
+            continue
+        seen.add(src)
+        found.append(src)
+        if len(found) >= 10:
+            break
+    return found
+
+
+def _page_text(soup: BeautifulSoup) -> Tuple[str, str, List[str]]:
     title_raw = ""
     if soup.title and soup.title.string:
         title_raw = soup.title.string
@@ -252,6 +283,8 @@ def _page_text(soup: BeautifulSoup) -> Tuple[str, str]:
     if root is None:
         root = work.body or work
 
+    images = _page_images(root)
+
     raw = root.get_text(" ", strip=True) if root else ""
     text = sanitize_document(raw)
     words = text.split()
@@ -261,7 +294,7 @@ def _page_text(soup: BeautifulSoup) -> Tuple[str, str]:
         text = " ".join(words)
     if len(text) > MAX_CHARS_PER_PAGE:
         text = text[:MAX_CHARS_PER_PAGE].rsplit(" ", 1)[0]
-    return title, text
+    return title, text, images
 
 
 def _fetch_html(client: httpx.Client, url: str) -> str:
@@ -330,6 +363,7 @@ def scrape_website(
     sections: List[str] = []
     crawl_log: List[Dict[str, object]] = []
     page_hashes: Dict[str, str] = {}
+    all_images: List[str] = []
     skipped_unchanged = 0
     site_title = root_host
     attempts = 0
@@ -437,7 +471,7 @@ def scrape_website(
                 continue
 
             soup = BeautifulSoup(html, "html.parser")
-            title, text = _page_text(soup)
+            title, text, page_images = _page_text(soup)
 
             if len(text) >= 40:
                 h = _content_hash(text)
@@ -455,6 +489,10 @@ def scrape_website(
                         total=est_total,
                     )
                 else:
+                    resolved_images = [urljoin(current, src) for src in page_images]
+                    for img_url in resolved_images:
+                        if img_url not in all_images:
+                            all_images.append(img_url)
                     pages.append({"url": current, "title": title, "text": text, "hash": h})
                     if not sections:
                         site_title = title or root_host
@@ -511,6 +549,7 @@ def scrape_website(
             "page_hashes": page_hashes,
             "skipped_unchanged": skipped_unchanged,
             "unchanged": True,
+            "images": [],
         }
 
     _emit(
@@ -544,6 +583,7 @@ def scrape_website(
         "page_hashes": page_hashes,
         "skipped_unchanged": skipped_unchanged,
         "unchanged": False,
+        "images": all_images[:20],
     }
 
 

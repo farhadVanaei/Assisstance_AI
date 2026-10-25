@@ -38,6 +38,7 @@ from ollama_rag.config import (
     DEFAULT_LANGUAGE,
     EMBED_MODEL,
     CHAT_MODEL,
+    MEDIA_DIR,
 )
 from ollama_rag.logging_setup import RequestIdMiddleware, setup_logging
 from ollama_rag.metrics import metrics
@@ -136,6 +137,7 @@ class IngestResult(BaseModel):
     domain: str = ""
     crawl_log: List[dict] = Field(default_factory=list)
     learned_urls: List[str] = Field(default_factory=list)
+    images: List[str] = Field(default_factory=list)
 
 
 def _website_ingest_message(scraped: dict) -> str:
@@ -228,7 +230,13 @@ async def _ingest_files_with_progress(
             yield _ndjson({"type": "error", "message": f"خطا در خواندن فایل «{name}»."})
             return
         cleaned = sanitize_document(extracted.get("text") or "")
-        added = agent.ingest(cleaned, extracted["source"], extracted["kind"])
+        file_images = extracted.get("images") or []
+        added = agent.ingest(
+            cleaned,
+            extracted["source"],
+            extracted["kind"],
+            meta={"images": file_images} if file_images else None,
+        )
         item = IngestResult(
             source=extracted["source"],
             kind=extracted["kind"],
@@ -240,6 +248,7 @@ async def _ingest_files_with_progress(
                 else f"«{name}» تکراری بود و اضافه نشد."
             ),
             pages=0,
+            images=file_images,
         )
         results.append(item.model_dump())
         progress_label = (
@@ -342,7 +351,12 @@ async def _ingest_website_with_progress(
 
     added = 0
     if scraped.get("text"):
-        added = get_agent(user_id).ingest(scraped["text"], scraped["title"], "وبسایت")
+        added = get_agent(user_id).ingest(
+            scraped["text"],
+            scraped["title"],
+            "وبسایت",
+            meta={"url": scraped.get("url"), "images": scraped.get("images") or []},
+        )
 
     item = IngestResult(
         source=scraped["title"],
@@ -354,6 +368,7 @@ async def _ingest_website_with_progress(
         domain=str(scraped.get("domain") or ""),
         crawl_log=list(scraped.get("crawl_log") or []),
         learned_urls=list(scraped.get("learned_urls") or []),
+        images=list(scraped.get("images") or []),
     )
     yield _ndjson(
         {
@@ -407,7 +422,13 @@ async def rag_upload(
                     detail=f"خطا در خواندن فایل «{upload.filename}».",
                 ) from exc
             cleaned = sanitize_document(extracted.get("text") or "")
-            added = agent.ingest(cleaned, extracted["source"], extracted["kind"])
+            file_images = extracted.get("images") or []
+            added = agent.ingest(
+                cleaned,
+                extracted["source"],
+                extracted["kind"],
+                meta={"images": file_images} if file_images else None,
+            )
             results.append(
                 IngestResult(
                     source=extracted["source"],
@@ -420,6 +441,7 @@ async def rag_upload(
                         else f"«{upload.filename}» تکراری بود و اضافه نشد."
                     ),
                     pages=0,
+                    images=file_images,
                 )
             )
 
@@ -437,7 +459,12 @@ async def rag_upload(
         _save_page_hashes(scraped, user_id)
         added = 0
         if scraped.get("text"):
-            added = agent.ingest(scraped["text"], scraped["title"], "وبسایت")
+            added = agent.ingest(
+                scraped["text"],
+                scraped["title"],
+                "وبسایت",
+                meta={"url": scraped.get("url"), "images": scraped.get("images") or []},
+            )
         results.append(
             IngestResult(
                 source=scraped["title"],
@@ -449,6 +476,7 @@ async def rag_upload(
                 domain=str(scraped.get("domain") or ""),
                 crawl_log=list(scraped.get("crawl_log") or []),
                 learned_urls=list(scraped.get("learned_urls") or []),
+                images=list(scraped.get("images") or []),
             )
         )
 
@@ -583,7 +611,12 @@ async def website_scrape(body: WebsiteRequest, user_id: str = Depends(require_us
         )
     added = 0
     if scraped.get("text"):
-        added = get_agent(user_id).ingest(scraped["text"], scraped["title"], "وبسایت")
+        added = get_agent(user_id).ingest(
+            scraped["text"],
+            scraped["title"],
+            "وبسایت",
+            meta={"url": scraped.get("url"), "images": scraped.get("images") or []},
+        )
     return IngestResult(
         source=scraped["title"],
         kind="وبسایت",
@@ -594,6 +627,7 @@ async def website_scrape(body: WebsiteRequest, user_id: str = Depends(require_us
         domain=str(scraped.get("domain") or ""),
         crawl_log=list(scraped.get("crawl_log") or []),
         learned_urls=list(scraped.get("learned_urls") or []),
+        images=list(scraped.get("images") or []),
     )
 
 
@@ -850,6 +884,7 @@ async def index():
 
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 
 @app.on_event("startup")
@@ -876,7 +911,12 @@ async def _startup() -> None:
                     )
                     _save_page_hashes(scraped, uid)
                     if scraped.get("text"):
-                        get_agent(uid).ingest(scraped["text"], scraped["title"], "وبسایت")
+                        get_agent(uid).ingest(
+                            scraped["text"],
+                            scraped["title"],
+                            "وبسایت",
+                            meta={"url": scraped.get("url"), "images": scraped.get("images") or []},
+                        )
                     mark_recrawl_done(target["url"], uid)
                     logger.info("Re-crawled %s for user %s", target["url"], uid)
                 except Exception:

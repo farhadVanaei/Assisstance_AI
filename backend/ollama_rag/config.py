@@ -17,6 +17,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 SQLITE_PATH = Path(os.getenv("JAVAD_SQLITE_PATH", str(DATA_DIR / "javad.db")))
 CHROMA_PATH = Path(os.getenv("JAVAD_CHROMA_PATH", str(DATA_DIR / "chroma")))
 CHROMA_COLLECTION = os.getenv("JAVAD_CHROMA_COLLECTION", "javad_chunks")
+MEDIA_DIR = Path(os.getenv("JAVAD_MEDIA_DIR", str(DATA_DIR / "media")))
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 CHAT_MODEL = os.getenv("JAVAD_OLLAMA_MODEL", "llama3.2")

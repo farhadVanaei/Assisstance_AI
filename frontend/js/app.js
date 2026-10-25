@@ -371,11 +371,25 @@
           const linkBit = safeUrl
             ? `<p class="text-xs mt-0.5"><a class="chat-cite" href="${safeUrl}" target="_blank" rel="noopener noreferrer" dir="ltr">${safeUrl}</a></p>`
             : "";
+          const images = Array.isArray(s.images) ? s.images.filter(Boolean) : [];
+          const thumbsBit = images.length
+            ? `<div class="knowledge-thumbs">` +
+              images
+                .slice(0, 6)
+                .map(
+                  (src) =>
+                    `<a href="${escapeHtml(src)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(src)}" loading="lazy" alt="تصویر از ${escapeHtml(s.name)}" /></a>`
+                )
+                .join("") +
+              (images.length > 6 ? `<span class="knowledge-thumbs-more">+${images.length - 6}</span>` : "") +
+              `</div>`
+            : "";
           return `<li class="knowledge-item">
             <div class="min-w-0">
               <p class="text-sm font-medium text-ink-700 truncate">${escapeHtml(s.name)}</p>
-              <p class="text-xs text-ink-400 mt-0.5">${escapeHtml(s.kind)} · ${s.chunk_count || 0} قطعه${date ? " · " + date : ""}</p>
+              <p class="text-xs text-ink-400 mt-0.5">${escapeHtml(s.kind)} · ${s.chunk_count || 0} قطعه${date ? " · " + date : ""}${images.length ? ` · ${images.length} تصویر` : ""}</p>
               ${linkBit}
+              ${thumbsBit}
             </div>
             <button type="button" class="source-delete-btn" data-delete-source="${escapeHtml(s.id)}">حذف</button>
           </li>`;
