@@ -39,6 +39,13 @@ logger = logging.getLogger("javad.agent")
 
 _TOKEN_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077FA-Za-z0-9]+")
 
+_STOPWORDS = {
+    "\u06A9\u0647", "\u0631\u0627", "\u0628\u0647", "\u0627\u0632", "\u062F\u0631", "\u0627\u06CC\u0646", "\u0622\u0646", "\u0648", "\u06CC\u0627", "\u06CC\u06A9", "\u0627\u0633\u062A", "\u0647\u0633\u062A",
+    "\u0645\u06CC", "\u0634\u0648\u062F", "\u0628\u0627", "\u0628\u0631\u0627\u06CC", "\u062A\u0627", "\u0647\u0645", "\u0628\u0631", "\u0647\u0627", "\u0647\u0627\u06CC", "\u06A9\u0646\u06CC\u062F", "\u06A9\u0646\u0645",
+    "\u0686\u06CC\u0633\u062A", "\u0686\u0647", "\u0686\u06CC", "\u06A9\u062F\u0627\u0645", "\u0622\u06CC\u0627", "\u0628\u0639\u062F", "\u067E\u0633", "\u0627\u06AF\u0631", "\u0628\u0627\u06CC\u062F", "\u0628\u0648\u062F",
+    "the", "and", "of", "to", "a", "is", "in", "for",
+}
+
 
 @dataclass
 class Chunk:
@@ -65,6 +72,7 @@ class JavadOllamaAgent:
     _bm25_ids: List[str] = field(default_factory=list)
     _bm25 = None
     _embed_model_used: str = ""
+    _corpus_common_terms: set = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.reload_cache()
@@ -96,6 +104,7 @@ class JavadOllamaAgent:
             self._bm25_corpus = corpus
             self._bm25_ids = ids
             self._bm25 = _build_bm25(corpus)
+            self._corpus_common_terms = _detect_common_terms(corpus)
         logger.info("Loaded %d chunks for user=%s", len(cache), self.user_id)
 
     def clear(self) -> None:
@@ -105,6 +114,7 @@ class JavadOllamaAgent:
             self._bm25_corpus.clear()
             self._bm25_ids.clear()
             self._bm25 = None
+            self._corpus_common_terms = set()
         self.vectors.delete(ids)
         self.vectors.delete_by_user(self.user_id)
         self.store.clear(self.user_id)
@@ -297,6 +307,7 @@ class JavadOllamaAgent:
 
         # Token overlap + substring boost
         q_tokens = set(_tokenize(query))
+        q_content_tokens = q_tokens - _STOPWORDS - self._corpus_common_terms
         q_low = query.lower().strip()
         hybrid: Dict[str, float] = {}
         all_ids = set(vec_scores) | set(bm25_scores) | set(self._chunk_cache)
@@ -304,18 +315,37 @@ class JavadOllamaAgent:
             chunk = self._chunk_cache.get(cid)
             if not chunk:
                 continue
+            c_tokens = set(_tokenize(chunk.text))
             overlap = 0.0
             if q_tokens:
-                c_tokens = set(_tokenize(chunk.text))
                 overlap = len(q_tokens & c_tokens) / max(len(q_tokens), 1)
+            substring_hit = False
             if q_low and q_low in chunk.text.lower():
                 overlap += 0.8
+                substring_hit = True
             if q_low and q_low in (chunk.source or "").lower():
                 overlap += 0.5
+                substring_hit = True
             v = vec_scores.get(cid, 0.0)
             b = bm25_scores.get(cid, 0.0)
             # Hybrid merge
             score = 0.45 * v + 0.35 * b + 0.20 * min(1.0, overlap)
+            # Hard lexical gate: on a dense, single-topic corpus, embedding similarity
+            # alone does not reliably separate relevant from irrelevant chunks
+            # (observed ~0.82-0.90 vector scores across topically unrelated documents
+            # that merely share the domain, e.g. "bank"). Require the query to share
+            # at least one real, corpus-discriminating word with the chunk —
+            # otherwise a high vector/BM25 score is almost certainly a false
+            # positive, so zero it out rather than cite an unrelated document as if
+            # it answered the question. Short/generic queries (<2 content words)
+            # skip this gate since there's not enough signal to safely filter on.
+            if len(q_content_tokens) >= 2 and not substring_hit:
+                shared = q_content_tokens & c_tokens
+                source_tokens = set(_tokenize(chunk.source or "")) - _STOPWORDS - self._corpus_common_terms
+                if not shared:
+                    shared = q_content_tokens & source_tokens
+                if not shared:
+                    score = 0.0
             hybrid[cid] = score
 
         ranked = sorted(hybrid.items(), key=lambda x: x[1], reverse=True)
@@ -619,6 +649,22 @@ def _build_bm25(corpus: List[str]):
         return BM25Okapi(tokenized)
     except Exception:
         return None
+
+
+def _detect_common_terms(corpus: List[str], doc_freq_ratio: float = 0.35, min_docs: int = 6) -> set:
+    """Words appearing in a large fraction of chunks (e.g. a company's own name,
+    or "bank" on a banking company's site) don't discriminate relevance for that
+    corpus — sharing only such a word with a query is not a real relevance signal.
+    Detected dynamically per corpus rather than hardcoded, so it adapts to whatever
+    knowledge base is actually loaded instead of being tuned to one deployment."""
+    if len(corpus) < min_docs:
+        return set()
+    doc_count: Dict[str, int] = {}
+    for text in corpus:
+        for tok in set(_tokenize(text)):
+            doc_count[tok] = doc_count.get(tok, 0) + 1
+    threshold = len(corpus) * doc_freq_ratio
+    return {tok for tok, n in doc_count.items() if n >= threshold}
 
 
 def _rerank(

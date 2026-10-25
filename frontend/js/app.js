@@ -646,12 +646,39 @@
   }
 
   async function startVoice() {
+    // Create the AudioContext synchronously in the click handler's call stack —
+    // some browsers only auto-start audio processing (and keep it un-suspended)
+    // when the context is created directly within a user-gesture, not inside a
+    // later async callback (e.g. a websocket's onopen). Created too late, the
+    // context can stay "suspended" forever: the socket connects fine but no
+    // audio ever gets captured, which looks exactly like "voice doesn't listen".
+    let audioCtx;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch {
+      showToast("مرورگر از صدا پشتیبانی نمی‌کند.", true);
+      return;
+    }
+
     try {
       voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      showToast("دسترسی به میکروفون ممکن نشد.", true);
+      showToast("دسترسی به میکروفون ممکن نشد. اجازهٔ میکروفون را در مرورگر بررسی کنید.", true);
+      try {
+        audioCtx.close();
+      } catch {
+        /* ignore */
+      }
       return;
     }
+
+    voiceAudioCtx = audioCtx;
+    try {
+      await voiceAudioCtx.resume();
+    } catch {
+      /* ignore */
+    }
+
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const params = new URLSearchParams({
       session_id: currentSessionId,
@@ -660,8 +687,12 @@
     voiceSocket = new WebSocket(`${proto}//${location.host}/ws/voip-stream?${params}`);
     voiceSocket.binaryType = "arraybuffer";
 
-    voiceSocket.onopen = () => {
-      voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    voiceSocket.onopen = async () => {
+      try {
+        await voiceAudioCtx.resume();
+      } catch {
+        /* ignore */
+      }
       const source = voiceAudioCtx.createMediaStreamSource(voiceStream);
       voiceProcessor = voiceAudioCtx.createScriptProcessor(4096, 1, 1);
       const inputRate = voiceAudioCtx.sampleRate;
