@@ -88,6 +88,13 @@ class JavadOllamaAgent:
         ids: List[str] = []
         for r in records:
             meta = source_meta.get(r.source_id, {})
+            chunk_meta = r.meta or {}
+            # Sectioned ingests (PDF/DOCX) store each chunk's own nearby images under
+            # "images" in chunk meta; fall back to the source-wide list only when a
+            # chunk predates that (or came from a kind without per-chunk sections).
+            chunk_images = chunk_meta.get("images")
+            if chunk_images is None:
+                chunk_images = meta.get("images") or []
             cache[r.id] = Chunk(
                 id=r.id,
                 source=r.source,
@@ -95,7 +102,7 @@ class JavadOllamaAgent:
                 kind=r.kind,
                 source_id=r.source_id,
                 url=str(meta.get("url") or ""),
-                images=list(meta.get("images") or []),
+                images=list(chunk_images),
             )
             corpus.append(r.text)
             ids.append(r.id)
@@ -164,9 +171,12 @@ class JavadOllamaAgent:
         *,
         ttl_days: Optional[int] = None,
         meta: Optional[Dict[str, Any]] = None,
+        sections: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
         with timed() as t:
-            added = self._ingest_impl(text, source, kind, ttl_days=ttl_days, meta=meta)
+            added = self._ingest_impl(
+                text, source, kind, ttl_days=ttl_days, meta=meta, sections=sections
+            )
         metrics.record_ingest(t.elapsed)
         return added
 
@@ -178,6 +188,7 @@ class JavadOllamaAgent:
         *,
         ttl_days: Optional[int] = None,
         meta: Optional[Dict[str, Any]] = None,
+        sections: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
         text = clean_text(text or "")
         if len(text) < 20:
@@ -195,7 +206,27 @@ class JavadOllamaAgent:
             logger.info("Duplicate content skipped: %s", source)
             return 0
 
-        parts = _split_chunks(text, max_len=CHUNK_MAX_LEN, overlap=CHUNK_OVERLAP)
+        # When sections carry their own text+images (e.g. per PDF page, per DOCX
+        # paragraph group), chunk each section separately so a chunk only inherits
+        # the images that actually sit next to its own text, not the whole document's.
+        metas: Optional[List[Dict[str, Any]]] = None
+        if sections:
+            parts = []
+            metas = []
+            for section in sections:
+                sec_text = clean_text(section.get("text") or "")
+                if not sec_text:
+                    continue
+                sec_images = section.get("images") or []
+                for p in _split_chunks(sec_text, max_len=CHUNK_MAX_LEN, overlap=CHUNK_OVERLAP):
+                    parts.append(p)
+                    metas.append({"images": sec_images})
+            if not parts:
+                parts = _split_chunks(text, max_len=CHUNK_MAX_LEN, overlap=CHUNK_OVERLAP)
+                metas = None
+        else:
+            parts = _split_chunks(text, max_len=CHUNK_MAX_LEN, overlap=CHUNK_OVERLAP)
+
         records = self.store.add_chunks(
             source_id=src.id,
             source=src.name,
@@ -203,6 +234,7 @@ class JavadOllamaAgent:
             texts=parts,
             user_id=self.user_id,
             expires_at=src.expires_at,
+            metas=metas,
         )
         if not records:
             return 0

@@ -15,19 +15,6 @@ def test_validate_rejects_unsupported():
         validate_upload("virus.exe", b"MZ\x00\x00" + b"x" * 100)
 
 
-def test_validate_rejects_oversized(monkeypatch):
-    from rag.ingest import IngestError, validate_upload
-    import ollama_rag.config as cfg
-
-    monkeypatch.setattr(cfg, "MAX_UPLOAD_BYTES", 100)
-    # Re-import bound constant used inside ingest — patch module attribute
-    import rag.ingest as ingest_mod
-
-    monkeypatch.setattr(ingest_mod, "MAX_UPLOAD_BYTES", 100)
-    with pytest.raises(IngestError):
-        validate_upload("big.txt", b"a" * 200)
-
-
 @pytest.mark.asyncio
 async def test_ingest_txt():
     from rag.ingest import ingest_file

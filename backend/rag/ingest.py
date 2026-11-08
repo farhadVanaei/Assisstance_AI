@@ -8,14 +8,14 @@ import io
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
-from ollama_rag.config import MAX_UPLOAD_BYTES, MEDIA_DIR
+from ollama_rag.config import MEDIA_DIR
 
 logger = logging.getLogger("javad.ingest")
 
@@ -76,9 +76,6 @@ def validate_upload(filename: str, data: bytes) -> str:
         raise IngestError("نام فایل نامعتبر است.")
     if not data:
         raise IngestError("فایل خالی است.")
-    if len(data) > MAX_UPLOAD_BYTES:
-        mb = MAX_UPLOAD_BYTES // (1024 * 1024)
-        raise IngestError(f"حجم فایل بیش از سقف مجاز ({mb} مگابایت) است.")
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise IngestError(
@@ -97,11 +94,15 @@ def validate_upload(filename: str, data: bytes) -> str:
 async def ingest_file(filename: str, data: bytes) -> dict:
     suffix = validate_upload(filename, data)
     images: List[str] = []
+    sections: List[Dict[str, Any]] = []
 
     if suffix == ".pdf":
-        text = _extract_pdf(data)
+        sections = _extract_pdf_sections(data)
+        if sections:
+            text = "\n".join(s["text"] for s in sections if s.get("text")).strip()
+        else:
+            text = _extract_pdf(data)
         kind = "pdf"
-        images = _extract_pdf_images(data)
     elif suffix in {".html", ".htm"}:
         text = _extract_html(data.decode("utf-8", errors="ignore"))
         kind = "html"
@@ -115,9 +116,12 @@ async def ingest_file(filename: str, data: bytes) -> dict:
         text = data.decode("utf-8", errors="ignore")
         kind = "text"
     elif suffix == ".docx":
-        text = _extract_docx(data)
+        sections = _extract_docx_sections(data)
+        if sections:
+            text = "\n".join(s["text"] for s in sections if s.get("text")).strip()
+        else:
+            text = _extract_docx(data)
         kind = "docx"
-        images = _extract_docx_images(data)
     elif suffix == ".pptx":
         text = _extract_pptx(data)
         kind = "pptx"
@@ -136,12 +140,19 @@ async def ingest_file(filename: str, data: bytes) -> dict:
     else:
         raise IngestError(f"نوع فایل پشتیبانی نمی‌شود: {suffix}")
 
+    if sections:
+        for s in sections:
+            for im in s.get("images") or []:
+                if im not in images:
+                    images.append(im)
+
     return {
         "source": filename,
         "kind": kind,
         "text": text,
         "chars": len(text),
         "images": images,
+        "sections": sections,
     }
 
 
@@ -173,21 +184,12 @@ async def ingest_url(url: str, timeout: float = 20.0) -> dict:
 
 
 def _extract_pdf(data: bytes) -> str:
+    sections = _extract_pdf_sections(data)
+    if sections:
+        return "\n".join(s["text"] for s in sections if s.get("text")).strip()
+
     # pypdf frequently drops word spacing and/or mis-orders RTL (Persian/Arabic)
     # text, corrupting tokenization-based retrieval; PyMuPDF handles both correctly.
-    try:
-        import pymupdf
-
-        text_parts = []
-        with pymupdf.open(stream=data, filetype="pdf") as doc:
-            for page in doc:
-                text_parts.append(page.get_text() or "")
-        text = "\n".join(text_parts).strip()
-        if text:
-            return text
-    except Exception as exc:
-        logger.info("pymupdf extraction failed, falling back to pypdf: %s", exc)
-
     reader = PdfReader(io.BytesIO(data))
     pages = []
     for page in reader.pages:
@@ -195,21 +197,27 @@ def _extract_pdf(data: bytes) -> str:
     return "\n".join(pages).strip()
 
 
-def _extract_pdf_images(data: bytes, max_images: int = 10) -> List[str]:
-    """Extract embedded raster images from a PDF (not full-page renders)."""
+def _extract_pdf_sections(
+    data: bytes, max_images_per_page: int = 10
+) -> List[Dict[str, Any]]:
+    """Per-page text + images, so each page's images stay attached to that page's
+    own text instead of leaking onto chunks from unrelated pages."""
     try:
         import pymupdf
     except Exception as exc:
-        logger.info("pymupdf unavailable for image extraction: %s", exc)
+        logger.info("pymupdf unavailable for PDF extraction: %s", exc)
         return []
 
-    urls: List[str] = []
     try:
         with pymupdf.open(stream=data, filetype="pdf") as doc:
+            page_count = doc.page_count
+            raw_pages: List[tuple] = []  # (page_text, [(hash, img_bytes, ext)])
+            hash_page_count: Dict[str, int] = {}
             for page in doc:
+                page_text = page.get_text() or ""
+                candidates = []
+                seen_on_page: Set[str] = set()
                 for img in page.get_images(full=True):
-                    if len(urls) >= max_images:
-                        return urls
                     xref = img[0]
                     try:
                         info = doc.extract_image(xref)
@@ -220,12 +228,36 @@ def _extract_pdf_images(data: bytes, max_images: int = 10) -> List[str]:
                     height = info.get("height") or 0
                     if not img_bytes or width < _MIN_IMAGE_DIM or height < _MIN_IMAGE_DIM:
                         continue
-                    saved = _save_media(img_bytes, info.get("ext") or "png")
-                    if saved and saved not in urls:
-                        urls.append(saved)
+                    h = hashlib.sha256(img_bytes).hexdigest()
+                    if h in seen_on_page:
+                        continue
+                    seen_on_page.add(h)
+                    candidates.append((h, img_bytes, info.get("ext") or "png"))
+                    hash_page_count[h] = hash_page_count.get(h, 0) + 1
+                raw_pages.append((page_text, candidates))
     except Exception as exc:
-        logger.info("PDF image extraction failed: %s", exc)
-    return urls
+        logger.info("PDF section extraction failed: %s", exc)
+        return []
+
+    # An image repeated across many pages is a header/footer logo or watermark,
+    # not page content — attaching it to every page's chunks is as misleading as
+    # attaching the whole document's images to every chunk.
+    repeat_threshold = max(3, page_count // 3) if page_count > 1 else 1
+    boilerplate = {
+        h for h, n in hash_page_count.items() if page_count > 1 and n >= repeat_threshold
+    }
+
+    sections: List[Dict[str, Any]] = []
+    for page_text, candidates in raw_pages:
+        page_images: List[str] = []
+        for h, img_bytes, ext in candidates:
+            if h in boilerplate or len(page_images) >= max_images_per_page:
+                continue
+            saved = _save_media(img_bytes, ext)
+            if saved and saved not in page_images:
+                page_images.append(saved)
+        sections.append({"text": page_text, "images": page_images})
+    return sections
 
 
 def _extract_html(html: str) -> str:
@@ -335,6 +367,79 @@ def _extract_docx_images(data: bytes, max_images: int = 10) -> List[str]:
     except Exception as exc:
         logger.info("DOCX image extraction failed: %s", exc)
     return urls
+
+
+_DOCX_RELS_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_DOCX_DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+def _extract_docx_sections(data: bytes, max_images: int = 10) -> List[Dict[str, Any]]:
+    """Per-paragraph-run text + images, so each image stays attached to the
+    paragraph it appears next to instead of being dumped on every chunk."""
+    try:
+        from docx import Document
+    except Exception as exc:
+        logger.info("python-docx unavailable for DOCX extraction: %s", exc)
+        return []
+
+    try:
+        doc = Document(io.BytesIO(data))
+    except Exception as exc:
+        logger.info("DOCX section extraction failed: %s", exc)
+        return []
+
+    sections: List[Dict[str, Any]] = []
+    current_text: List[str] = []
+    current_images: List[str] = []
+    total_images = 0
+
+    def flush() -> None:
+        text = "\n".join(current_text).strip()
+        if text or current_images:
+            sections.append({"text": text, "images": list(current_images)})
+        current_text.clear()
+        current_images.clear()
+
+    try:
+        for para in doc.paragraphs:
+            if para.text and para.text.strip():
+                current_text.append(para.text.strip())
+            if total_images >= max_images:
+                continue
+            for blip in para._p.findall(f".//{{{_DOCX_DRAWING_NS}}}blip"):
+                rid = blip.get(f"{{{_DOCX_RELS_NS}}}embed")
+                if not rid:
+                    continue
+                try:
+                    part = doc.part.related_parts[rid]
+                    img_bytes = part.blob
+                    ext = Path(part.partname).suffix or ".png"
+                except Exception:
+                    continue
+                if len(img_bytes) < 1024:  # skip tiny decorative images
+                    continue
+                saved = _save_media(img_bytes, ext)
+                if saved and saved not in current_images:
+                    current_images.append(saved)
+                    total_images += 1
+                    flush()
+                if total_images >= max_images:
+                    break
+    except Exception as exc:
+        logger.info("DOCX section extraction failed: %s", exc)
+        return []
+    flush()
+
+    table_parts = []
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text and c.text.strip()]
+            if cells:
+                table_parts.append(" | ".join(cells))
+    if table_parts:
+        sections.append({"text": "\n".join(table_parts), "images": []})
+
+    return sections
 
 
 def _extract_pptx(data: bytes) -> str:

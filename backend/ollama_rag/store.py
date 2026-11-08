@@ -211,11 +211,12 @@ class SQLiteStore:
         texts: List[str],
         user_id: str = "default",
         expires_at: Optional[float] = None,
+        metas: Optional[List[Optional[Dict[str, Any]]]] = None,
     ) -> List[ChunkRecord]:
         now = time.time()
         records: List[ChunkRecord] = []
         with self._lock, self._conn() as conn:
-            for text in texts:
+            for idx, text in enumerate(texts):
                 cid = uuid.uuid4().hex
                 h = content_hash(text)
                 # Skip duplicate chunk text for same user
@@ -225,13 +226,25 @@ class SQLiteStore:
                 ).fetchone()
                 if dup:
                     continue
+                meta = (metas[idx] if metas and idx < len(metas) else None) or {}
                 conn.execute(
                     """
                     INSERT INTO chunks (id, source_id, source, text, kind, content_hash,
                                         user_id, created_at, expires_at, meta)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (cid, source_id, source, text, kind, h, user_id, now, expires_at, "{}"),
+                    (
+                        cid,
+                        source_id,
+                        source,
+                        text,
+                        kind,
+                        h,
+                        user_id,
+                        now,
+                        expires_at,
+                        json.dumps(meta, ensure_ascii=False),
+                    ),
                 )
                 records.append(
                     ChunkRecord(
@@ -244,6 +257,7 @@ class SQLiteStore:
                         user_id=user_id,
                         created_at=now,
                         expires_at=expires_at,
+                        meta=meta,
                     )
                 )
             conn.execute(

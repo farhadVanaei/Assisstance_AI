@@ -236,6 +236,7 @@ async def _ingest_files_with_progress(
             extracted["source"],
             extracted["kind"],
             meta={"images": file_images} if file_images else None,
+            sections=extracted.get("sections") or None,
         )
         item = IngestResult(
             source=extracted["source"],
@@ -428,6 +429,7 @@ async def rag_upload(
                 extracted["source"],
                 extracted["kind"],
                 meta={"images": file_images} if file_images else None,
+                sections=extracted.get("sections") or None,
             )
             results.append(
                 IngestResult(
@@ -682,7 +684,19 @@ async def memory_clear(user_id: str = Depends(require_user)):
     """پاکسازی کامل دانش و حافظهٔ گفتگو برای کاربر جاری."""
     get_agent(user_id).clear()
     if UPLOADS_DIR.exists():
-        shutil.rmtree(UPLOADS_DIR)
+        # Remove contents only, not the directory itself: in Docker, UPLOADS_DIR is
+        # a bind-mount point, and rmtree()-ing the mount point itself raises
+        # "Device or resource busy" (Errno 16) since the mounted inode can't be
+        # unlinked from inside the container.
+        for entry in UPLOADS_DIR.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+    else:
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     return {
         "ok": True,
